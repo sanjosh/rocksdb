@@ -5,10 +5,83 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <map> // inmemory map
+#include <string> // key value
 
 #include "rocksdb/types.h" // SequenceNumber
+#include "rocksdb/status.h" // Status
+#include "rocksdb/slice.h" // Slice
 #include "rocksdb/write_batch.h" // WriteBatch
 #include "db/write_batch_internal.h" // WriteBatchInternal
+
+// need to add KeyType and SequenceNumber
+typedef std::map<std::string, std::string> InMemKV;
+typedef std::map<uint32_t, InMemKV> InMemDB;
+
+using rocksdb::WriteBatch;
+using rocksdb::Slice;
+using rocksdb::Status;
+
+struct MapInserter : public WriteBatch::Handler {
+
+  InMemDB& db_;
+
+  MapInserter() = delete;
+
+  explicit MapInserter(InMemDB& db) : db_(db) {}
+
+  virtual Status PutCF(uint32_t column_family_id, 
+    const Slice& key,
+    const Slice& value) override
+  {
+    std::cout << "inserting into cf=" << column_family_id 
+      << ":key=" << key.ToString()
+      << std::endl;
+
+    auto& kvmap = db_[column_family_id];
+    kvmap.insert(std::make_pair(key.ToString(), value.ToString()));
+    return Status::OK();
+  }
+
+  virtual void Put(const Slice& key,
+    const Slice& value) override
+  {
+    std::cout << "inserting into cf=0" 
+      << ":key=" << key.ToString()
+      << std::endl;
+
+    auto& kvmap = db_[0];
+    kvmap.insert(std::make_pair(key.ToString(), value.ToString()));
+  }
+
+  virtual Status DeleteCF(uint32_t column_family_id, 
+    const Slice& key)
+  {
+    std::cout << "deleting from cf=" << column_family_id
+      << ":key=" << key.ToString()
+      << std::endl;
+    auto& kvmap = db_[column_family_id];
+    auto numErased = kvmap.erase(key.ToString());
+    return Status::OK();
+  }
+
+  virtual void Delete(const Slice& key)
+  {
+    std::cout << "deleting from cf=0" 
+      << ":key=" << key.ToString()
+      << std::endl;
+    auto& kvmap = db_[0];
+    auto numErased = kvmap.erase(key.ToString());
+  }
+
+  virtual void LogData(const Slice& blob)
+  {
+    // TODO later
+  }
+
+};
+
+InMemDB db;
 
 int main(){
 
@@ -60,9 +133,10 @@ int main(){
 
   while (!eof) {
 
-    // read socket while not eof
+    ssize_t readSz = 0;
+    // read from socket until eof
     if (!eof) {
-      ssize_t readSz = read(newSocket, buf + readOff, sizeof(buf));
+      readSz = read(newSocket, buf + readOff, sizeof(buf));
       if (readSz <= 0) {
         eof = true;
       } else {
@@ -71,13 +145,14 @@ int main(){
     }
 
     std::cout 
-      << "read size=" << readSz 
-      << "processedOff=" << processedOff 
-      << "readOff=" << readOff 
+      << "read from socket size=" << readSz 
+      << ":processedOff=" << processedOff 
+      << ":readOff=" << readOff 
       << std::endl;
 
-    // assume multiple records are read
-    // records do not get fragmented during read
+    // for now,
+    // assume multiple records are read from socket
+    // no record gets fragmented during read
     while (processedOff < readOff) {
 
       // assert that readOff - processedOff > value being read
@@ -86,17 +161,20 @@ int main(){
 
       if (sw->size <= (readOff - processedOff - sizeof(ServerWrite))) {
 
-        rocksdb::WriteBatch b;
+        rocksdb::WriteBatch batch;
         rocksdb::Slice slice(sw->buf, sw->size);
-        rocksdb::WriteBatchInternal::SetContents(&b, slice);
+        rocksdb::WriteBatchInternal::SetContents(&batch, slice);
   
-        std::cout << "read writebatch "
+        std::cout << "Got a WriteBatch"
           << " seq=" << sw->seq
-          << " size=" << b.GetDataSize()
-          << " count=" << b.Count()
+          << ":size=" << batch.GetDataSize()
+          << ":num updates in batch=" << batch.Count()
           << std::endl;
 
         processedOff += sizeof(ServerWrite) + sw->size;
+
+        MapInserter handler(db);
+        batch.Iterate(&handler);
         
       } else {
         std::cout << "fragmented record read" << std::endl;
@@ -106,7 +184,18 @@ int main(){
     }
 
     readOff = processedOff = 0;
+  }
 
+  std::cout << "Printing in-memory db" << std::endl;
+  for (auto kvmap : db)
+  {
+    for (auto elem : kvmap.second)
+    {
+      std::cout 
+        << "key=" << elem.first 
+        << ":value=" << elem.second 
+        << std::endl;
+    }
   }
 
   return 0;
