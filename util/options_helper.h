@@ -311,6 +311,12 @@ static std::unordered_map<std::string, OptionTypeInfo> db_options_type_info = {
     {"access_hint_on_compaction_start",
      {offsetof(struct DBOptions, access_hint_on_compaction_start),
       OptionType::kAccessHint, OptionVerificationType::kNormal}},
+    {"repl_port",
+     {offsetof(struct DBOptions, repl_port),
+      OptionType::kInt, OptionVerificationType::kNormal}},
+    {"repl_addr",
+     {offsetof(struct DBOptions, repl_addr),
+      OptionType::kString, OptionVerificationType::kNormal}},
     {"info_log_level",
      {offsetof(struct DBOptions, info_log_level), OptionType::kInfoLogLevel,
       OptionVerificationType::kNormal}}};

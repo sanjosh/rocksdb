@@ -184,6 +184,8 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
       {"writable_file_max_buffer_size", "314159"},
       {"bytes_per_sync", "47"},
       {"wal_bytes_per_sync", "48"},
+      {"repl_addr", "localhost"},
+      {"repl_port", "8192"},
   };
 
   ColumnFamilyOptions base_cf_opt;
@@ -296,6 +298,8 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
   ASSERT_EQ(new_db_opt.writable_file_max_buffer_size, 314159);
   ASSERT_EQ(new_db_opt.bytes_per_sync, static_cast<uint64_t>(47));
   ASSERT_EQ(new_db_opt.wal_bytes_per_sync, static_cast<uint64_t>(48));
+  ASSERT_EQ(new_db_opt.repl_addr, "localhost");
+  ASSERT_EQ(new_db_opt.repl_port, static_cast<int>(8192));
 }
 #endif  // !ROCKSDB_LITE
 
@@ -1705,6 +1709,8 @@ TEST_F(OptionsParserTest, DBOptionsAllFieldsSettable) {
                              "max_log_file_size=4607;"
                              "random_access_max_buffer_size=1048576;"
                              "advise_random_on_open=true;"
+                             "repl_addr=localhost;"
+                             "repl_port=0;"
                              "fail_if_options_file_error=false;"
                              "allow_concurrent_memtable_write=true;"
                              "wal_recovery_mode=kPointInTimeRecovery;"

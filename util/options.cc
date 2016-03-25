@@ -272,8 +272,11 @@ DBOptions::DBOptions()
 #ifndef ROCKSDB_LITE
       wal_filter(nullptr),
 #endif  // ROCKSDB_LITE
+      repl_addr(""),
+      repl_port(0),
       fail_if_options_file_error(false) {
 }
+
 
 DBOptions::DBOptions(const Options& options)
     : create_if_missing(options.create_if_missing),
@@ -340,6 +343,8 @@ DBOptions::DBOptions(const Options& options)
       row_cache(options.row_cache),
 #ifndef ROCKSDB_LITE
       wal_filter(options.wal_filter),
+      repl_addr(options.repl_addr),
+      repl_port(options.repl_port),
 #endif  // ROCKSDB_LITE
       fail_if_options_file_error(options.fail_if_options_file_error) {
 }
@@ -462,6 +467,10 @@ void DBOptions::Dump(Logger* log) const {
     } else {
       Header(log, "                               Options.row_cache: None");
     }
+    Header(log, "               Options.repl_addr: %s",
+         repl_addr.c_str());
+    Header(log, "               Options.repl_port: %d",
+         repl_port);
 #ifndef ROCKSDB_LITE
     Header(log, "       Options.wal_filter: %s",
            wal_filter ? wal_filter->Name() : "None");
