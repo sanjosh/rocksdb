@@ -159,7 +159,11 @@ void DBImpl::ReplThreadBody(void* arg)
       
     iter.reset();
     Status s;
-    while (!t->db->GetUpdatesSince(currentSeqNum, &iter).ok()) {
+    Log(InfoLogLevel::INFO_LEVEL, logger, 
+      "Repl thread asking for logs from seq=%llu",
+      currentSeqNum + 1);
+        
+    while (!t->db->GetUpdatesSince(currentSeqNum + 1, &iter).ok()) {
       if (!t->stop.load(std::memory_order_acquire)) {
         break;
       }
@@ -177,7 +181,7 @@ void DBImpl::ReplThreadBody(void* arg)
       char buf[0];
     };
 
-    for (; iter->Valid(); iter->Next(), currentSeqNum ++) {
+    for (; iter->Valid(); iter->Next()) {
 
       BatchResult res = iter->GetBatch();
 
@@ -186,7 +190,7 @@ void DBImpl::ReplThreadBody(void* arg)
       ServerWrite* sw = (ServerWrite*) malloc(totalSz);
 
       sw->size = batch.size();
-      sw->seq = res.sequence;
+      currentSeqNum = sw->seq = res.sequence;
       memcpy(sw->buf, batch.data(), batch.size());
 
       ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
@@ -203,8 +207,9 @@ void DBImpl::ReplThreadBody(void* arg)
       }
 
       Log(InfoLogLevel::INFO_LEVEL, logger, 
-        "Repl thread sent %ld actual batch=%lu numUpd=%d ", 
+        "Repl thread sent %ld seq=%llu actual batch=%lu numUpd=%d ", 
         writeSz,
+        res.sequence,
         batch.size(),
         res.writeBatchPtr->Count()
       );
