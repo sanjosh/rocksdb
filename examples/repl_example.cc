@@ -22,7 +22,7 @@ int main() {
   options.OptimizeLevelStyleCompaction();
   // create the DB if it's not already present
   options.create_if_missing = true;
-  options.repl_addr = "localhost";
+  options.repl_addr = "127.0.0.1";
   options.repl_port = 8192;
   options.info_log_level = rocksdb::InfoLogLevel::DEBUG_LEVEL;
 

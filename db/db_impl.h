@@ -67,6 +67,7 @@ class DBImpl : public DB {
     DBImpl* db;
     std::atomic<bool> stop;
     std::atomic<bool> has_stopped;
+    int socket;
     int port;
     std::string addr;
   };

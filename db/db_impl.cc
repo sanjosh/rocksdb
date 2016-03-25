@@ -119,6 +119,10 @@ struct DBImpl::WriteContext {
   }
 };
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 void DBImpl::ReplThreadBody(void* arg)
 {
   DBImpl::ReplThreadInfo* t = reinterpret_cast<DBImpl::ReplThreadInfo*>(arg);
@@ -126,9 +130,53 @@ void DBImpl::ReplThreadBody(void* arg)
 
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
+  t->socket = socket(PF_INET, SOCK_STREAM, 0);
+
+  struct sockaddr_in server_addr;
+  socklen_t server_addr_size;
+
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(t->port);
+  server_addr.sin_addr.s_addr = inet_addr(t->addr.c_str());
+  memset(server_addr.sin_zero, '\0', sizeof(server_addr.sin_zero));
+  server_addr_size = sizeof(server_addr);
+
+  int err = connect(t->socket, (struct sockaddr*)&server_addr, server_addr_size);
+
+  if (err < 0)
+  {
+    Log(InfoLogLevel::INFO_LEVEL, logger, 
+      "socket could not connect to %s:%d error=%d",
+      t->addr.c_str(), 
+      t->port,
+      errno);
+  }
+
+  std::unique_ptr<TransactionLogIterator> iter;
+  SequenceNumber currentSeqNum = 0;
+
   while (!t->stop.load(std::memory_order_acquire)) {
-    Env::Default()->SleepForMicroseconds(10000);
-    Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread working");
+      
+    iter.reset();
+    Status s;
+    while (!t->db->GetUpdatesSince(currentSeqNum, &iter).ok()) {
+      if (!t->stop.load(std::memory_order_acquire)) {
+        break;
+      }
+    }
+      
+    for (; iter->Valid(); iter->Next(), currentSeqNum ++) {
+      BatchResult res = iter->GetBatch();
+      // TODO write to socket
+
+      char buf[] = "got it";
+      ssize_t writeSz = write(t->socket, buf, strlen(buf));
+      if (writeSz != (ssize_t)strlen(buf)) {
+        Log(InfoLogLevel::INFO_LEVEL, logger, "write failed sz=%ld errno=%d", 
+          writeSz, errno);
+      }
+      Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread sent %ld", writeSz);
+    }
   }
   t->has_stopped.store(true, std::memory_order_release);
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
