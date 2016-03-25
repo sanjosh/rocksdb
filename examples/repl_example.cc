@@ -4,6 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 #include <cstdio>
 #include <string>
+#include <unistd.h>
 
 #include "rocksdb/db.h"
 #include "rocksdb/slice.h"
@@ -52,6 +53,8 @@ int main() {
 
   db->Get(ReadOptions(), "key2", &value);
   assert(value == "value");
+  
+  usleep(10000);
 
   delete db;
 

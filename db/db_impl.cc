@@ -165,17 +165,31 @@ void DBImpl::ReplThreadBody(void* arg)
       }
     }
       
+    if (iter.get() == nullptr) {
+      // no more WAL
+      break;
+    }
+
     for (; iter->Valid(); iter->Next(), currentSeqNum ++) {
       BatchResult res = iter->GetBatch();
       // TODO write to socket
 
-      char buf[] = "got it";
-      ssize_t writeSz = write(t->socket, buf, strlen(buf));
-      if (writeSz != (ssize_t)strlen(buf)) {
+      auto batch = res.writeBatchPtr->Data();
+
+      ssize_t writeSz = write(t->socket, batch.data(), batch.size());
+
+      if (writeSz != (ssize_t)batch.size()) {
         Log(InfoLogLevel::INFO_LEVEL, logger, "write failed sz=%ld errno=%d", 
-          writeSz, errno);
+          writeSz, 
+          errno);
       }
-      Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread sent %ld", writeSz);
+
+      Log(InfoLogLevel::INFO_LEVEL, logger, 
+        "Repl thread sent %ld actual batch=%lu numUpd=%d ", 
+        writeSz,
+        batch.size(),
+        res.writeBatchPtr->Count()
+        );
     }
   }
   t->has_stopped.store(true, std::memory_order_release);
