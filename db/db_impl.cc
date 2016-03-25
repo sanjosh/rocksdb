@@ -120,8 +120,8 @@ struct DBImpl::WriteContext {
 };
 
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <netinet/in.h> 
+#include <arpa/inet.h> //  inet_addr
 
 void DBImpl::ReplThreadBody(void* arg)
 {
@@ -170,18 +170,36 @@ void DBImpl::ReplThreadBody(void* arg)
       break;
     }
 
+    struct ServerWrite
+    {
+      size_t size;
+      SequenceNumber seq;
+      char buf[0];
+    };
+
     for (; iter->Valid(); iter->Next(), currentSeqNum ++) {
+
       BatchResult res = iter->GetBatch();
-      // TODO write to socket
 
       auto batch = res.writeBatchPtr->Data();
+      ssize_t totalSz = sizeof(ServerWrite) + batch.size();
+      ServerWrite* sw = (ServerWrite*) malloc(totalSz);
 
-      ssize_t writeSz = write(t->socket, batch.data(), batch.size());
+      sw->size = batch.size();
+      sw->seq = res.sequence;
+      memcpy(sw->buf, batch.data(), batch.size());
 
-      if (writeSz != (ssize_t)batch.size()) {
-        Log(InfoLogLevel::INFO_LEVEL, logger, "write failed sz=%ld errno=%d", 
+      ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
+
+      free(sw);
+
+      if (writeSz != totalSz) {
+        Log(InfoLogLevel::INFO_LEVEL, logger, 
+          "write failed sz=%ld expected=%ld errno=%d", 
           writeSz, 
-          errno);
+          totalSz,
+          errno
+        );
       }
 
       Log(InfoLogLevel::INFO_LEVEL, logger, 
@@ -189,7 +207,7 @@ void DBImpl::ReplThreadBody(void* arg)
         writeSz,
         batch.size(),
         res.writeBatchPtr->Count()
-        );
+      );
     }
   }
   t->has_stopped.store(true, std::memory_order_release);

@@ -1,9 +1,14 @@
 #include <stdio.h>
+#include <iostream>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <string.h>
+
+#include "rocksdb/types.h" // SequenceNumber
+#include "rocksdb/write_batch.h" // WriteBatch
+#include "db/write_batch_internal.h" // WriteBatchInternal
 
 int main(){
 
@@ -40,12 +45,68 @@ int main(){
   newSocket = accept(listenSocket, (struct sockaddr *) &serverStorage, &addr_size);
 
   char buf[8192];
-  while (1) {
-    ssize_t readSz = read(newSocket, buf, sizeof(buf));
-    printf("got readSz=%ld\n", readSz);
-    if (readSz <= 0) {
-      break;
+  off_t processedOff = 0;
+  off_t readOff = 0;
+  bool eof = false;
+
+  bzero(buf, sizeof(buf));
+
+  struct ServerWrite
+  {
+    size_t size;
+    rocksdb::SequenceNumber seq;
+    char buf[0];
+  };
+
+  while (!eof) {
+
+    // read socket while not eof
+    if (!eof) {
+      ssize_t readSz = read(newSocket, buf + readOff, sizeof(buf));
+      if (readSz <= 0) {
+        eof = true;
+      } else {
+        readOff += readSz;
+      }
     }
+
+    std::cout 
+      << "read size=" << readSz 
+      << "processedOff=" << processedOff 
+      << "readOff=" << readOff 
+      << std::endl;
+
+    // assume multiple records are read
+    // records do not get fragmented during read
+    while (processedOff < readOff) {
+
+      // assert that readOff - processedOff > value being read
+      ServerWrite* sw
+        = (ServerWrite*)(buf + processedOff);
+
+      if (sw->size <= (readOff - processedOff - sizeof(ServerWrite))) {
+
+        rocksdb::WriteBatch b;
+        rocksdb::Slice slice(sw->buf, sw->size);
+        rocksdb::WriteBatchInternal::SetContents(&b, slice);
+  
+        std::cout << "read writebatch "
+          << " seq=" << sw->seq
+          << " size=" << b.GetDataSize()
+          << " count=" << b.Count()
+          << std::endl;
+
+        processedOff += sizeof(ServerWrite) + sw->size;
+        
+      } else {
+        std::cout << "fragmented record read" << std::endl;
+        eof = true;
+        break;
+      }
+    }
+
+    readOff = processedOff = 0;
+
   }
 
   return 0;
