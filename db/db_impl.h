@@ -61,6 +61,16 @@ class DBImpl : public DB {
   DBImpl(const DBOptions& options, const std::string& dbname);
   virtual ~DBImpl();
 
+  static void ReplThreadBody(void* arg);
+
+  struct ReplThreadInfo {
+    DBImpl* db;
+    std::atomic<bool> stop;
+    std::atomic<bool> has_stopped;
+    int port;
+    std::string addr;
+  };
+
   // Implementations of the DB interface
   using DB::Put;
   virtual Status Put(const WriteOptions& options,
@@ -855,6 +865,8 @@ class DBImpl : public DB {
 
   // Indicate DB was opened successfully
   bool opened_successfully_;
+
+  ReplThreadInfo repl_thread_info_;
 
   // No copying allowed
   DBImpl(const DBImpl&);

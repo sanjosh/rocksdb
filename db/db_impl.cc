@@ -119,6 +119,21 @@ struct DBImpl::WriteContext {
   }
 };
 
+void DBImpl::ReplThreadBody(void* arg)
+{
+  DBImpl::ReplThreadInfo* t = reinterpret_cast<DBImpl::ReplThreadInfo*>(arg);
+  auto& logger = t->db->db_options_.info_log;
+
+  Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
+
+  while (!t->stop.load(std::memory_order_acquire)) {
+    Env::Default()->SleepForMicroseconds(10000);
+    Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread working");
+  }
+  t->has_stopped.store(true, std::memory_order_release);
+  Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
+}
+
 Options SanitizeOptions(const std::string& dbname,
                         const InternalKeyComparator* icmp,
                         const Options& src) {
@@ -346,6 +361,13 @@ DBImpl::~DBImpl() {
   mutex_.Lock();
   bg_compaction_scheduled_ -= compactions_unscheduled;
   bg_flush_scheduled_ -= flushes_unscheduled;
+
+  repl_thread_info_.stop.store(true, std::memory_order_release);
+  // wait for thread to exit
+  while (!repl_thread_info_.has_stopped.load(std::memory_order_acquire)) {
+    Env::Default()->SleepForMicroseconds(10000);
+    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log, "Waiting for Repl thread to stop");
+  }
 
   // Wait for background work to finish
   while (bg_compaction_scheduled_ || bg_flush_scheduled_) {
@@ -5545,6 +5567,18 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
         sfm->OnAddFile(file_path);
       }
     }
+  }
+
+  if ((impl->db_options_.repl_addr.size()) &&   
+      (impl->db_options_.repl_port != 0)) {
+    Log(InfoLogLevel::INFO_LEVEL, impl->db_options_.info_log, "starting repl thread");
+    impl->repl_thread_info_.db = impl;
+    impl->repl_thread_info_.stop = false;
+    impl->repl_thread_info_.has_stopped = false;
+    impl->repl_thread_info_.port = impl->db_options_.repl_port;
+    impl->repl_thread_info_.addr = impl->db_options_.repl_addr;
+
+    impl->env_->StartThread(DBImpl::ReplThreadBody, &impl->repl_thread_info_);
   }
 
   if (s.ok()) {
