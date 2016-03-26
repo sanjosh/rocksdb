@@ -174,25 +174,27 @@ void DBImpl::ReplThreadBody(void* arg)
       continue;
     }
 
-    struct ServerWrite
-    {
-      size_t size;
-      SequenceNumber seq;
-      char buf[0];
-    };
-
     for (; iter->Valid(); iter->Next()) {
 
       BatchResult res = iter->GetBatch();
 
       auto batch = res.writeBatchPtr->Data();
-      ssize_t totalSz = sizeof(ServerWrite) + batch.size();
-      ServerWrite* sw = (ServerWrite*) malloc(totalSz);
+      ssize_t totalSz = sizeof(ReplServerBlock) + batch.size();
 
-      sw->size = batch.size();
-      // CAn also use WriteBatchInternal::Sequence(batch)
-      currentSeqNum = sw->seq = res.sequence;
+      // TODO : combine into an operator new + ctor
+      ReplServerBlock* sw = (ReplServerBlock*) malloc(totalSz);
       memcpy(sw->buf, batch.data(), batch.size());
+      sw->size = batch.size();
+      sw->seq = res.sequence;
+
+      // When you commit a WriteBatch at seq=M with (say) 3 upd
+      // rocksdb increments sequence number by 3 to M+3
+      // i.e. intermediate numbers are skipped
+      // Now, if you ask for a WriteBatch starting from seq M+1
+      // GetUpdatesSince() will return the update with seq=M even 
+      // though it is less than what you asked, because one of 
+      // the updates actually havs seq=M
+      currentSeqNum = res.sequence + res.writeBatchPtr->Count() - 1;
 
       ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
 
@@ -3868,6 +3870,8 @@ Status DBImpl::CreateColumnFamily(const ColumnFamilyOptions& cf_options,
     return s;
   }
 
+  std::string blob;
+  bool editEncoded = false;
   {
     InstrumentedMutexLock l(&mutex_);
 
@@ -3917,12 +3921,25 @@ Status DBImpl::CreateColumnFamily(const ColumnFamilyOptions& cf_options,
       Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
           "Created column family [%s] (ID %u)",
           column_family_name.c_str(), (unsigned)cfd->GetID());
+
+      editEncoded = edit.EncodeTo(&blob);
     } else {
       Log(InfoLogLevel::ERROR_LEVEL, db_options_.info_log,
           "Creating column family [%s] FAILED -- %s",
           column_family_name.c_str(), s.ToString().c_str());
     }
   }  // InstrumentedMutexLock l(&mutex_)
+
+  // TODO Offloader write this 
+  if (editEncoded) {
+    WriteOptions writeOpt;
+    writeOpt.sync = true;
+    WriteBatch cfBatch;
+    Slice cfSlice(blob);
+    cfBatch.PutLogData(cfSlice);
+    auto writeStat = WriteImpl(writeOpt, &cfBatch, nullptr);
+    assert(writeStat.ok());
+  }
 
   // this is outside the mutex
   if (s.ok()) {
@@ -5148,11 +5165,9 @@ Status DBImpl::GetUpdatesSince(
     const TransactionLogIterator::ReadOptions& read_options) {
 
   RecordTick(stats_, GET_UPDATES_SINCE_CALLS);
-  if (seq >= versions_->LastSequence()) {
+  if (seq > versions_->LastSequence()) {
     return Status::NotFound("Requested sequence not yet written in the db");
   }
-  //Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
-        //"Repl wanted seq=%lu and last=%lu.\n", seq, versions_->LastSequence());
   return wal_manager_.GetUpdatesSince(seq, iter, read_options, versions_.get());
 }
 

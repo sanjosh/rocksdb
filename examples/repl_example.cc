@@ -23,6 +23,7 @@ int main() {
   options.OptimizeLevelStyleCompaction();
   // create the DB if it's not already present
   options.create_if_missing = true;
+  options.compaction_style = kCompactionStyleNone;
   options.repl_addr = "127.0.0.1";
   options.repl_port = 8192;
   options.info_log_level = rocksdb::InfoLogLevel::DEBUG_LEVEL;
@@ -59,6 +60,7 @@ int main() {
     std::string key = "key_" + std::to_string(i);
     s = db->Put(WriteOptions(), key, "value");
     assert(s.ok());
+    usleep(100); // delayed write
   }
   
   usleep(10000);

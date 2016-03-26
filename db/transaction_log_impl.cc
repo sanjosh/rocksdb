@@ -37,11 +37,6 @@ TransactionLogIteratorImpl::TransactionLogIteratorImpl(
 
   reporter_.env = options_->env;
   reporter_.info_log = options_->info_log.get();
-  char buf[100];
-  sprintf(buf, "Repl expected seq=%lu:version last=%lu",
-    seq, 
-    versions_->LastSequence());
-  reporter_.Info(buf);
   SeekToStartSequence(); // Seek till starting sequence
 }
 
@@ -253,12 +248,6 @@ void TransactionLogIteratorImpl::UpdateCurrentWriteBatch(const Slice& record) {
   currentLastSeq_ = currentBatchSeq_ +
                     WriteBatchInternal::Count(batch.get()) - 1;
   // currentBatchSeq_ can only change here
-  char buf[100];
-  sprintf(buf, "Repl last=%lu:cur=%lu:start=%lu", 
-    currentLastSeq_, 
-    currentBatchSeq_, 
-    startingSequenceNumber_);
-  reporter_.Info(buf);
   assert(currentLastSeq_ <= versions_->LastSequence());
 
   currentBatch_ = move(batch);

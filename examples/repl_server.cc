@@ -124,13 +124,6 @@ int main(){
 
   bzero(buf, sizeof(buf));
 
-  struct ServerWrite
-  {
-    size_t size;
-    rocksdb::SequenceNumber seq;
-    char buf[0];
-  };
-
   while (!eof) {
 
     ssize_t readSz = 0;
@@ -156,10 +149,10 @@ int main(){
     while (processedOff < readOff) {
 
       // assert that readOff - processedOff > value being read
-      ServerWrite* sw
-        = (ServerWrite*)(buf + processedOff);
+      ReplServerBlock* sw
+        = (ReplServerBlock*)(buf + processedOff);
 
-      if (sw->size <= (readOff - processedOff - sizeof(ServerWrite))) {
+      if (sw->size <= (readOff - processedOff - sizeof(ReplServerBlock))) {
 
         rocksdb::WriteBatch batch;
         rocksdb::Slice slice(sw->buf, sw->size);
@@ -171,7 +164,7 @@ int main(){
           << ":num updates in batch=" << batch.Count()
           << std::endl;
 
-        processedOff += sizeof(ServerWrite) + sw->size;
+        processedOff += sizeof(ReplServerBlock) + sw->size;
 
         MapInserter handler(db);
         batch.Iterate(&handler);

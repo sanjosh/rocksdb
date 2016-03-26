@@ -160,4 +160,11 @@ class WriteBatchInternal {
   static size_t AppendedByteSize(size_t leftByteSize, size_t rightByteSize);
 };
 
+struct ReplServerBlock
+{
+  size_t size;
+  SequenceNumber seq;
+  char buf[0];
+};
+
 }  // namespace rocksdb
