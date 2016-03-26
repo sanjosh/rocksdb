@@ -14,23 +14,48 @@
 #include "rocksdb/write_batch.h" // WriteBatch
 #include "db/version_edit.h" // VersionEdit
 #include "db/write_batch_internal.h" // WriteBatchInternal
-
-// need to add KeyType and SequenceNumber
-typedef std::map<std::string, std::string> InMemKV;
-typedef std::map<uint32_t, InMemKV> InMemDB;
+#include "db/dbformat.h" // SequenceNumber
 
 using rocksdb::WriteBatch;
 using rocksdb::ReplServerBlock;
 using rocksdb::Slice;
 using rocksdb::Status;
+using rocksdb::ValueType;
+using rocksdb::SequenceNumber;
+
+struct MemValue {
+  SequenceNumber seqnum;
+  ValueType type;
+  std::string value;
+
+  MemValue(SequenceNumber seq, ValueType t, const std::string& v)
+    : seqnum(seq), type(t), value(v) {}
+
+  MemValue(SequenceNumber seq, ValueType t)
+    : seqnum(seq), type(t) {}
+
+  friend std::ostream& operator << (std::ostream& os, const MemValue& m)
+  {
+    os << m.seqnum << ":" << m.type << ":" << m.value;
+    return os;
+  }
+};
+
+typedef std::multimap<std::string, MemValue> InMemKV; // key -> value
+typedef std::map<uint32_t, InMemKV> InMemDB; // cfid -> map
+
+static constexpr uint32_t defaultColumnFamilyIdx = 100; // TODO
 
 struct MapInserter : public WriteBatch::Handler {
 
   InMemDB& db_;
+  SequenceNumber seq_;
 
   MapInserter() = delete;
 
-  explicit MapInserter(InMemDB& db) : db_(db) {}
+  explicit MapInserter(SequenceNumber seq, 
+    InMemDB& db) 
+    : db_(db), seq_(seq) {}
 
   virtual Status PutCF(uint32_t column_family_id, 
     const Slice& key,
@@ -41,19 +66,21 @@ struct MapInserter : public WriteBatch::Handler {
       << std::endl;
 
     auto& kvmap = db_[column_family_id];
-    kvmap.insert(std::make_pair(key.ToString(), value.ToString()));
+    MemValue m(seq_, rocksdb::ValueType::kTypeColumnFamilyValue, value.ToString());
+    kvmap.insert(std::make_pair(key.ToString(), m));
     return Status::OK();
   }
 
   virtual void Put(const Slice& key,
     const Slice& value) override
   {
-    std::cout << "inserting into cf=0" 
+    std::cout << "inserting into cf=default" 
       << ":key=" << key.ToString()
       << std::endl;
 
-    auto& kvmap = db_[0];
-    kvmap.insert(std::make_pair(key.ToString(), value.ToString()));
+    auto& kvmap = db_[defaultColumnFamilyIdx];
+    MemValue m(seq_, rocksdb::ValueType::kTypeValue, value.ToString());
+    kvmap.insert(std::make_pair(key.ToString(), m));
   }
 
   virtual Status DeleteCF(uint32_t column_family_id, 
@@ -63,17 +90,19 @@ struct MapInserter : public WriteBatch::Handler {
       << ":key=" << key.ToString()
       << std::endl;
     auto& kvmap = db_[column_family_id];
-    auto numErased = kvmap.erase(key.ToString());
+    MemValue m(seq_, rocksdb::ValueType::kTypeColumnFamilyDeletion);
+    kvmap.insert(std::make_pair(key.ToString(), m));
     return Status::OK();
   }
 
   virtual void Delete(const Slice& key)
   {
-    std::cout << "deleting from cf=0" 
+    std::cout << "deleting from cf=default" 
       << ":key=" << key.ToString()
       << std::endl;
-    auto& kvmap = db_[0];
-    auto numErased = kvmap.erase(key.ToString());
+    auto& kvmap = db_[defaultColumnFamilyIdx];
+    MemValue m(seq_, rocksdb::ValueType::kTypeDeletion);
+    kvmap.insert(std::make_pair(key.ToString(), m));
   }
 
   virtual void LogData(const Slice& blob)
@@ -97,32 +126,25 @@ int main(){
   struct sockaddr_storage serverStorage;
   socklen_t addr_size;
 
-  /*---- Create the socket. The three arguments are: ----*/
-  /* 1) Internet domain 2) Stream socket 3) Default protocol (TCP in this case) */
   listenSocket = socket(PF_INET, SOCK_STREAM, 0);
   
-  /*---- Configure settings of the server address struct ----*/
-  /* Address family = Internet */
   serverAddr.sin_family = AF_INET;
-  /* Set port number, using htons function to use proper byte order */
   serverAddr.sin_port = htons(8192);
-  /* Set IP address to localhost */
   serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-  /* Set all bits of the padding field to 0 */
   memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
 
-  /*---- Bind the address struct to the socket ----*/
   bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
 
-  /*---- Listen on the socket, with 5 max connection requests queued ----*/
   if(listen(listenSocket,5)==0)
     printf("Listening\n");
-  else
+  else {
     printf("Error\n");
+    exit(1);
+  }
 
-  /*---- Accept call creates a new socket for the incoming connection ----*/
   addr_size = sizeof serverStorage;
-  newSocket = accept(listenSocket, (struct sockaddr *) &serverStorage, &addr_size);
+  newSocket = accept(listenSocket, 
+    (struct sockaddr *) &serverStorage, &addr_size);
 
   char buf[8192];
   off_t processedOff = 0;
@@ -163,6 +185,7 @@ int main(){
 
         rocksdb::WriteBatch batch;
         rocksdb::Slice slice(sw->buf, sw->size);
+        // set contents of batch using Slice
         rocksdb::WriteBatchInternal::SetContents(&batch, slice);
   
         std::cout << "Got a WriteBatch"
@@ -173,7 +196,7 @@ int main(){
 
         processedOff += sizeof(ReplServerBlock) + sw->size;
 
-        MapInserter handler(db);
+        MapInserter handler(sw->seq, db);
         batch.Iterate(&handler);
         
       } else {
