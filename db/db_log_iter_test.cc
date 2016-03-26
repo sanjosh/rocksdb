@@ -21,6 +21,15 @@ class DBTestXactLogIterator : public DBTestBase {
  public:
   DBTestXactLogIterator() : DBTestBase("/db_log_iter_test") {}
 
+  std::unique_ptr<TransactionLogIterator> OpenInvalidTransactionLogIter(
+      const SequenceNumber seq) {
+    unique_ptr<TransactionLogIterator> iter;
+    Status status = dbfull()->GetUpdatesSince(seq, &iter);
+    EXPECT_TRUE(status.IsNotFound());
+    EXPECT_TRUE(!iter->Valid());
+    return iter;
+  }
+
   std::unique_ptr<TransactionLogIterator> OpenTransactionLogIter(
       const SequenceNumber seq) {
     unique_ptr<TransactionLogIterator> iter;
@@ -57,6 +66,50 @@ void ExpectRecords(
   ASSERT_EQ(num_records, expected_no_records);
 }
 }  // namespace
+
+TEST_F(DBTestXactLogIterator, BadTransactionLogIterator) {
+  do {
+    Options options = OptionsForLogIterTest();
+    DestroyAndReopen(options);
+    CreateAndReopenWithCF({"pikachu"}, options);
+    Put(0, "key1", DummyString(1024));
+    Put(1, "key2", DummyString(1024));
+    Put(1, "key2", DummyString(1024));
+    ASSERT_EQ(dbfull()->GetLatestSequenceNumber(), 3U);
+    {
+      auto iter = OpenInvalidTransactionLogIter(4U);
+      ExpectRecords(0, iter);
+    }
+    {
+      auto iter = OpenTransactionLogIter(3U);
+      ExpectRecords(1, iter);
+    }
+    {
+      auto iter = OpenTransactionLogIter(2U);
+      ExpectRecords(2, iter);
+    }
+    {
+      auto iter = OpenTransactionLogIter(1U);
+      ExpectRecords(3, iter);
+    }
+    ReopenWithColumnFamilies({"default", "pikachu"}, options);
+    env_->SleepForMicroseconds(2 * 1000 * 1000);
+    {
+      Put(0, "key4", DummyString(1024));
+      Put(1, "key5", DummyString(1024));
+      Put(0, "key6", DummyString(1024));
+    }
+    {
+      auto iter = OpenTransactionLogIter(3U);
+      ExpectRecords(4, iter);
+    }
+    {
+      auto iter = OpenTransactionLogIter(4U);
+      ExpectRecords(3, iter);
+    }
+  } while (ChangeCompactOptions());
+}
+
 
 TEST_F(DBTestXactLogIterator, TransactionLogIterator) {
   do {

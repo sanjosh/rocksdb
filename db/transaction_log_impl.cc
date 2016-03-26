@@ -128,6 +128,10 @@ void TransactionLogIteratorImpl::SeekToStartSequence(
       return;
     } else {
       isValid_ = false;
+      if (startingSequenceNumber_ > versions_->LastSequence()) {
+        currentStatus_ = Status::NotFound("Seek is beyond last sequence number written");
+        break;
+      }
     }
   }
 
@@ -248,6 +252,10 @@ void TransactionLogIteratorImpl::UpdateCurrentWriteBatch(const Slice& record) {
   currentLastSeq_ = currentBatchSeq_ +
                     WriteBatchInternal::Count(batch.get()) - 1;
   // currentBatchSeq_ can only change here
+  char buf[100];
+  sprintf(buf, "Repl last=%lu:cur=%lu:start=%lu", 
+    currentLastSeq_, currentBatchSeq_, startingSequenceNumber_);
+  reporter_.Info(buf);
   assert(currentLastSeq_ <= versions_->LastSequence());
 
   currentBatch_ = move(batch);
