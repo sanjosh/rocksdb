@@ -160,6 +160,7 @@ class WriteBatchInternal {
   static size_t AppendedByteSize(size_t leftByteSize, size_t rightByteSize);
 };
 
+// communication format between rocksdb and Offloader
 struct ReplServerBlock
 {
   size_t size;

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <thread> 
 #include <map> // inmemory map
 #include <string> // key value
 
@@ -114,12 +115,63 @@ struct MapInserter : public WriteBatch::Handler {
         << edit.DebugString() << std::endl;
     }
   }
-
 };
 
 InMemDB db;
+static constexpr int port = 8192;
+static constexpr int readPort = port + 1;
 
-int main(){
+void readWork()
+{
+  int listenSocket, newSocket;
+  struct sockaddr_in serverAddr;
+  struct sockaddr_storage serverStorage;
+  socklen_t addr_size;
+
+  listenSocket = socket(PF_INET, SOCK_STREAM, 0);
+  
+  serverAddr.sin_family = AF_INET;
+  serverAddr.sin_port = htons(readPort);
+  serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+  memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
+
+  bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
+
+  if(listen(listenSocket,5)==0)
+    printf("Listening\n");
+  else {
+    printf("Error\n");
+    pthread_exit(0);
+  }
+
+  addr_size = sizeof serverStorage;
+  newSocket = accept(listenSocket, 
+    (struct sockaddr *) &serverStorage, &addr_size);
+
+  char buf[8192];
+  bool eof = false;
+
+  std::cout << "got new connection to handle reads" << std::endl;
+
+  while (!eof) {
+    bzero(buf, sizeof(buf));
+    ssize_t readSz = read(newSocket, buf, sizeof(buf));
+    if (readSz <= 0) {
+      eof = true;
+    }
+
+    std::cout 
+      << "read from ReadSocket size=" << readSz 
+      << std::endl;
+  }
+
+  close(newSocket);
+  close(listenSocket);
+}
+
+int main(int argc, char* argv[])
+{
+  std::thread readThr = std::thread(readWork);
 
   int listenSocket, newSocket;
   struct sockaddr_in serverAddr;
@@ -155,19 +207,16 @@ int main(){
 
   while (!eof) {
 
-    ssize_t readSz = 0;
     // read from socket until eof
-    if (!eof) {
-      readSz = read(newSocket, buf + readOff, sizeof(buf));
-      if (readSz <= 0) {
-        eof = true;
-      } else {
-        readOff += readSz;
-      }
+    ssize_t readSz = read(newSocket, buf + readOff, sizeof(buf));
+    if (readSz <= 0) {
+      eof = true;
+    } else {
+      readOff += readSz;
     }
 
     std::cout 
-      << "read from socket size=" << readSz 
+      << "read from WriteSocket size=" << readSz 
       << ":processedOff=" << processedOff 
       << ":readOff=" << readOff 
       << std::endl;
@@ -208,6 +257,9 @@ int main(){
 
     readOff = processedOff = 0;
   }
+
+  close(listenSocket);
+  close(newSocket);
 
   std::cout << "Printing in-memory db" << std::endl;
   for (auto kvmap : db)

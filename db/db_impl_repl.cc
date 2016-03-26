@@ -12,6 +12,28 @@
 
 namespace rocksdb {
 
+static int ConnectSocket(std::string& addr, int port, int& sock_fd)
+{
+  sock_fd = socket(PF_INET, SOCK_STREAM, 0);
+
+  struct sockaddr_in server_addr;
+  socklen_t server_addr_size;
+
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(port);
+  server_addr.sin_addr.s_addr = inet_addr(addr.c_str());
+  memset(server_addr.sin_zero, '\0', sizeof(server_addr.sin_zero));
+  server_addr_size = sizeof(server_addr);
+
+  int err = connect(sock_fd, (struct sockaddr*)&server_addr, server_addr_size);
+  if (err < 0) 
+  {
+    close(sock_fd);
+    return errno;
+  }
+  return err;
+}
+
 void DBImpl::ReplThreadBody(void* arg)
 {
   DBImpl::ReplThreadInfo* t = reinterpret_cast<DBImpl::ReplThreadInfo*>(arg);
@@ -20,26 +42,21 @@ void DBImpl::ReplThreadBody(void* arg)
   auto& logger = t->db->db_options_.info_log;
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
-  t->socket = socket(PF_INET, SOCK_STREAM, 0);
+  int err = ConnectSocket(t->addr, t->port, t->socket);
+  int err2 = ConnectSocket(t->addr, t->port + 1, t->readSocket);
 
-  struct sockaddr_in server_addr;
-  socklen_t server_addr_size;
-
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(t->port);
-  server_addr.sin_addr.s_addr = inet_addr(t->addr.c_str());
-  memset(server_addr.sin_zero, '\0', sizeof(server_addr.sin_zero));
-  server_addr_size = sizeof(server_addr);
-
-  int err = connect(t->socket, (struct sockaddr*)&server_addr, server_addr_size);
-
-  if (err < 0)
+  if ((err < 0) || (err2 < 0))
   {
     Log(InfoLogLevel::INFO_LEVEL, logger, 
-      "socket could not connect to %s:%d error=%d",
+      "sockets could not start to %s:%d error=%d:%d",
       t->addr.c_str(), 
       t->port,
-      errno);
+      err,
+      err2);
+
+    t->has_stopped.store(true, std::memory_order_release);
+    Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
+    return;
   }
 
   std::unique_ptr<TransactionLogIterator> iter;

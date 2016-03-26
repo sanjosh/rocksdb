@@ -68,7 +68,8 @@ class DBImpl : public DB {
     std::atomic<bool> stop;
     std::atomic<bool> has_stopped;
     std::atomic<bool> started;
-    int socket = -1;
+    int socket = -1; // used to send WAL to offloader
+    int readSocket = -1; // used to query offloader
     int port = 0;
     std::string addr;
   };
