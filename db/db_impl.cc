@@ -126,8 +126,9 @@ struct DBImpl::WriteContext {
 void DBImpl::ReplThreadBody(void* arg)
 {
   DBImpl::ReplThreadInfo* t = reinterpret_cast<DBImpl::ReplThreadInfo*>(arg);
-  auto& logger = t->db->db_options_.info_log;
+  t->started.store(true, std::memory_order_release);
 
+  auto& logger = t->db->db_options_.info_log;
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
   t->socket = socket(PF_INET, SOCK_STREAM, 0);
@@ -190,6 +191,7 @@ void DBImpl::ReplThreadBody(void* arg)
       ServerWrite* sw = (ServerWrite*) malloc(totalSz);
 
       sw->size = batch.size();
+      // CAn also use WriteBatchInternal::Sequence(batch)
       currentSeqNum = sw->seq = res.sequence;
       memcpy(sw->buf, batch.data(), batch.size());
 
@@ -447,11 +449,14 @@ DBImpl::~DBImpl() {
   bg_compaction_scheduled_ -= compactions_unscheduled;
   bg_flush_scheduled_ -= flushes_unscheduled;
 
-  repl_thread_info_.stop.store(true, std::memory_order_release);
-  // wait for thread to exit
-  while (!repl_thread_info_.has_stopped.load(std::memory_order_acquire)) {
-    Env::Default()->SleepForMicroseconds(10000);
-    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log, "Waiting for Repl thread to stop");
+  if (repl_thread_info_.started.load(std::memory_order_acquire)) { 
+    // was thread started ?
+    repl_thread_info_.stop.store(true, std::memory_order_release);
+    // wait for thread to exit
+    while (!repl_thread_info_.has_stopped.load(std::memory_order_acquire)) {
+      Env::Default()->SleepForMicroseconds(10000);
+      Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log, "Waiting for Repl thread to stop");
+    }
   }
 
   // Wait for background work to finish

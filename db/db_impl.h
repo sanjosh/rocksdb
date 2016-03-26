@@ -64,11 +64,12 @@ class DBImpl : public DB {
   static void ReplThreadBody(void* arg);
 
   struct ReplThreadInfo {
-    DBImpl* db;
+    DBImpl* db = nullptr;
     std::atomic<bool> stop;
     std::atomic<bool> has_stopped;
-    int socket;
-    int port;
+    std::atomic<bool> started;
+    int socket = -1;
+    int port = 0;
     std::string addr;
   };
 
