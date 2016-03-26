@@ -53,6 +53,13 @@ int main() {
 
   db->Get(ReadOptions(), "key2", &value);
   assert(value == "value");
+
+  // Put key-value
+  for (int i = 0; i < 100; i++) {
+    std::string key = "key_" + std::to_string(i);
+    s = db->Put(WriteOptions(), key, "value");
+    assert(s.ok());
+  }
   
   usleep(10000);
 

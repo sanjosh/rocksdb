@@ -159,7 +159,6 @@ void DBImpl::ReplThreadBody(void* arg)
   while (!t->stop.load(std::memory_order_acquire)) {
       
     iter.reset();
-    Status s;
     Log(InfoLogLevel::INFO_LEVEL, logger, 
       "Repl thread asking for logs from seq=%llu",
       currentSeqNum + 1);
@@ -171,8 +170,8 @@ void DBImpl::ReplThreadBody(void* arg)
     }
       
     if (iter.get() == nullptr) {
-      // no more WAL
-      break;
+      usleep(100); // need a condition variable
+      continue;
     }
 
     struct ServerWrite
@@ -5149,9 +5148,11 @@ Status DBImpl::GetUpdatesSince(
     const TransactionLogIterator::ReadOptions& read_options) {
 
   RecordTick(stats_, GET_UPDATES_SINCE_CALLS);
-  if (seq > versions_->LastSequence()) {
+  if (seq >= versions_->LastSequence()) {
     return Status::NotFound("Requested sequence not yet written in the db");
   }
+  //Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
+        //"Repl wanted seq=%lu and last=%lu.\n", seq, versions_->LastSequence());
   return wal_manager_.GetUpdatesSince(seq, iter, read_options, versions_.get());
 }
 
