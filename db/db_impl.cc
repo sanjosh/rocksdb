@@ -119,109 +119,6 @@ struct DBImpl::WriteContext {
   }
 };
 
-#include <sys/socket.h>
-#include <netinet/in.h> 
-#include <arpa/inet.h> //  inet_addr
-
-void DBImpl::ReplThreadBody(void* arg)
-{
-  DBImpl::ReplThreadInfo* t = reinterpret_cast<DBImpl::ReplThreadInfo*>(arg);
-  t->started.store(true, std::memory_order_release);
-
-  auto& logger = t->db->db_options_.info_log;
-  Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
-
-  t->socket = socket(PF_INET, SOCK_STREAM, 0);
-
-  struct sockaddr_in server_addr;
-  socklen_t server_addr_size;
-
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(t->port);
-  server_addr.sin_addr.s_addr = inet_addr(t->addr.c_str());
-  memset(server_addr.sin_zero, '\0', sizeof(server_addr.sin_zero));
-  server_addr_size = sizeof(server_addr);
-
-  int err = connect(t->socket, (struct sockaddr*)&server_addr, server_addr_size);
-
-  if (err < 0)
-  {
-    Log(InfoLogLevel::INFO_LEVEL, logger, 
-      "socket could not connect to %s:%d error=%d",
-      t->addr.c_str(), 
-      t->port,
-      errno);
-  }
-
-  std::unique_ptr<TransactionLogIterator> iter;
-  SequenceNumber currentSeqNum = 0;
-
-  while (!t->stop.load(std::memory_order_acquire)) {
-      
-    iter.reset();
-    Log(InfoLogLevel::INFO_LEVEL, logger, 
-      "Repl thread asking for logs from seq=%llu",
-      currentSeqNum + 1);
-        
-    while (!t->db->GetUpdatesSince(currentSeqNum + 1, &iter).ok()) {
-      if (!t->stop.load(std::memory_order_acquire)) {
-        break;
-      }
-    }
-      
-    if (iter.get() == nullptr) {
-      Env::Default()->SleepForMicroseconds(100); // TODO cond var
-      continue;
-    }
-
-    for (; iter->Valid(); iter->Next()) {
-
-      BatchResult res = iter->GetBatch();
-
-      auto batch = res.writeBatchPtr->Data();
-      ssize_t totalSz = sizeof(ReplServerBlock) + batch.size();
-
-      // TODO : combine into an operator new + ctor
-      ReplServerBlock* sw = (ReplServerBlock*) malloc(totalSz);
-      memcpy(sw->buf, batch.data(), batch.size());
-      sw->size = batch.size();
-      sw->seq = res.sequence;
-
-      // When you commit a WriteBatch at seq=M with (say) 3 upd
-      // rocksdb increments sequence number by 3 to M+3
-      // i.e. intermediate numbers are skipped
-      // Now, if you ask for a WriteBatch starting from seq M+1
-      // GetUpdatesSince() will return the update with seq=M even 
-      // though it is less than what you asked, because one of 
-      // the updates actually havs seq=M
-      currentSeqNum = res.sequence + res.writeBatchPtr->Count() - 1;
-
-      const ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
-      const int capture_errno = errno;
-
-      if (writeSz != totalSz) {
-        Log(InfoLogLevel::ERROR_LEVEL, logger, 
-          "write failed sz=%ld expected=%ld errno=%d", 
-          writeSz, 
-          totalSz,
-          capture_errno
-        );
-      }
-      
-      free(sw);
-
-      Log(InfoLogLevel::INFO_LEVEL, logger, 
-        "Repl thread sent %ld seq=%llu actual batch=%lu numUpd=%d ", 
-        writeSz,
-        res.sequence,
-        batch.size(),
-        res.writeBatchPtr->Count()
-      );
-    }
-  }
-  t->has_stopped.store(true, std::memory_order_release);
-  Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
-}
 
 Options SanitizeOptions(const std::string& dbname,
                         const InternalKeyComparator* icmp,
@@ -451,6 +348,7 @@ DBImpl::~DBImpl() {
   bg_compaction_scheduled_ -= compactions_unscheduled;
   bg_flush_scheduled_ -= flushes_unscheduled;
 
+  // REPL
   if (repl_thread_info_.started.load(std::memory_order_acquire)) { 
     // was thread started ?
     repl_thread_info_.stop.store(true, std::memory_order_release);
@@ -5711,6 +5609,7 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
     }
   }
 
+  // REPL
   if ((impl->db_options_.repl_addr.size()) &&   
       (impl->db_options_.repl_port != 0)) {
     Log(InfoLogLevel::INFO_LEVEL, impl->db_options_.info_log, "starting repl thread");

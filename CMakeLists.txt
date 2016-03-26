@@ -114,6 +114,7 @@ set(SOURCES
         db/db_impl_debug.cc
         db/db_impl_experimental.cc
         db/db_impl_readonly.cc
+        db/db_impl_repl.cc
         db/db_info_dumper.cc
         db/db_iter.cc
         db/event_helpers.cc
