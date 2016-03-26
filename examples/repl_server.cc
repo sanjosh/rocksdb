@@ -12,6 +12,7 @@
 #include "rocksdb/status.h" // Status
 #include "rocksdb/slice.h" // Slice
 #include "rocksdb/write_batch.h" // WriteBatch
+#include "db/version_edit.h" // VersionEdit
 #include "db/write_batch_internal.h" // WriteBatchInternal
 
 // need to add KeyType and SequenceNumber
@@ -19,6 +20,7 @@ typedef std::map<std::string, std::string> InMemKV;
 typedef std::map<uint32_t, InMemKV> InMemDB;
 
 using rocksdb::WriteBatch;
+using rocksdb::ReplServerBlock;
 using rocksdb::Slice;
 using rocksdb::Status;
 
@@ -76,7 +78,12 @@ struct MapInserter : public WriteBatch::Handler {
 
   virtual void LogData(const Slice& blob)
   {
-    // TODO later
+    rocksdb::VersionEdit edit;
+    auto s = edit.DecodeFrom(blob);
+    if (s.ok()) {
+      std::cout << "got version edit="
+        << edit.DebugString() << std::endl;
+    }
   }
 
 };

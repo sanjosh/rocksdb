@@ -2,12 +2,15 @@ include ../make_config.mk
 
 .PHONY: clean librocksdb
 
-all: repl_server repl_example simple_example column_families_example compact_files_example c_simple_example optimistic_transaction_example transaction_example
+all: repl_server repl_example repl_column_families simple_example column_families_example compact_files_example c_simple_example optimistic_transaction_example transaction_example
 
 repl_server: librocksdb repl_server.cc
 	$(CXX) $(CXXFLAGS) $@.cc -o$@ ../librocksdb.a -I.. -I../include -g -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 repl_example: librocksdb repl_example.cc
+	$(CXX) $(CXXFLAGS) $@.cc -o$@ ../librocksdb.a -I../include -g -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
+
+repl_column_families: librocksdb repl_column_families.cc
 	$(CXX) $(CXXFLAGS) $@.cc -o$@ ../librocksdb.a -I../include -g -std=c++11 $(PLATFORM_LDFLAGS) $(PLATFORM_CXXFLAGS) $(EXEC_LDFLAGS)
 
 simple_example: librocksdb simple_example.cc

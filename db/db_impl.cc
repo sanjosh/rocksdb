@@ -170,7 +170,7 @@ void DBImpl::ReplThreadBody(void* arg)
     }
       
     if (iter.get() == nullptr) {
-      usleep(100); // need a condition variable
+      Env::Default()->SleepForMicroseconds(100); // TODO cond var
       continue;
     }
 
@@ -196,18 +196,19 @@ void DBImpl::ReplThreadBody(void* arg)
       // the updates actually havs seq=M
       currentSeqNum = res.sequence + res.writeBatchPtr->Count() - 1;
 
-      ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
-
-      free(sw);
+      const ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
+      const int capture_errno = errno;
 
       if (writeSz != totalSz) {
-        Log(InfoLogLevel::INFO_LEVEL, logger, 
+        Log(InfoLogLevel::ERROR_LEVEL, logger, 
           "write failed sz=%ld expected=%ld errno=%d", 
           writeSz, 
           totalSz,
-          errno
+          capture_errno
         );
       }
+      
+      free(sw);
 
       Log(InfoLogLevel::INFO_LEVEL, logger, 
         "Repl thread sent %ld seq=%llu actual batch=%lu numUpd=%d ", 
@@ -3930,15 +3931,21 @@ Status DBImpl::CreateColumnFamily(const ColumnFamilyOptions& cf_options,
     }
   }  // InstrumentedMutexLock l(&mutex_)
 
-  // TODO Offloader write this 
+  // write this to the Offloader
+  // if rocksdb fails before this, then sync up
+  // will be done after restart 
   if (editEncoded) {
     WriteOptions writeOpt;
-    writeOpt.sync = true;
+    writeOpt.sync = true; // sync write
     WriteBatch cfBatch;
     Slice cfSlice(blob);
     cfBatch.PutLogData(cfSlice);
     auto writeStat = WriteImpl(writeOpt, &cfBatch, nullptr);
     assert(writeStat.ok());
+    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
+      "create column family=%s added to WAL",
+      column_family_name.c_str());
+
   }
 
   // this is outside the mutex
@@ -4005,6 +4012,35 @@ Status DBImpl::DropColumnFamily(ColumnFamilyHandle* column_family) {
         }
       }
       is_snapshot_supported_ = new_is_snapshot_supported;
+    }
+  }
+
+  // Send this to the Offloader
+  // if rocksdb fails before this, then sync up
+  // will be done after restart 
+  if (s.ok()) {
+    std::string blob;
+    const bool editEncoded = edit.EncodeTo(&blob);
+    if (editEncoded) {
+
+      Slice dfSlice(blob);
+
+      WriteOptions writeOpt;
+      writeOpt.sync = true; // sync write
+
+      WriteBatch dfBatch;
+      dfBatch.PutLogData(dfSlice);
+
+      auto writeStat = WriteImpl(writeOpt, &dfBatch, nullptr);
+      if (!writeStat.ok()) {
+        Log(InfoLogLevel::WARN_LEVEL, db_options_.info_log,
+          "Failed to write WAL for Dropped column family with id %u\n", 
+          cfd->GetID());
+      }
+    } else {
+      Log(InfoLogLevel::WARN_LEVEL, db_options_.info_log,
+        "Failed to encode Version edit for family with id %u\n", 
+        cfd->GetID());
     }
   }
 
