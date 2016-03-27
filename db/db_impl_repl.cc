@@ -1,6 +1,7 @@
 #include "db/db_impl.h"
+#include "db/db_repl.h"
 #include "db/auto_roll_logger.h"
-#include "db/write_batch_internal.h" // ReplServerBlock
+#include "db/write_batch_internal.h" 
 #include "rocksdb/env.h" // Env
 #include "rocksdb/status.h" // Env
 
@@ -85,10 +86,10 @@ void DBImpl::ReplThreadBody(void* arg)
       BatchResult res = iter->GetBatch();
 
       auto batch = res.writeBatchPtr->Data();
-      ssize_t totalSz = sizeof(ReplServerBlock) + batch.size();
+      ssize_t totalSz = sizeof(ReplWALUpdate) + batch.size();
 
       // TODO : combine into an operator new + ctor
-      ReplServerBlock* sw = (ReplServerBlock*) malloc(totalSz);
+      ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
       memcpy(sw->buf, batch.data(), batch.size());
       sw->size = batch.size();
       sw->seq = res.sequence;

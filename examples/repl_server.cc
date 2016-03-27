@@ -15,10 +15,11 @@
 #include "rocksdb/write_batch.h" // WriteBatch
 #include "db/version_edit.h" // VersionEdit
 #include "db/write_batch_internal.h" // WriteBatchInternal
-#include "db/dbformat.h" // SequenceNumber
+#include "db/dbformat.h" // ValueType
+#include "db/db_repl.h" // Repl structures
 
 using rocksdb::WriteBatch;
-using rocksdb::ReplServerBlock;
+using rocksdb::ReplWALUpdate;
 using rocksdb::ReplLookupResponse;
 using rocksdb::ReplLookupRequest;
 using rocksdb::Slice;
@@ -26,25 +27,53 @@ using rocksdb::Status;
 using rocksdb::ValueType;
 using rocksdb::SequenceNumber;
 
-struct MemValue {
-  SequenceNumber seqnum;
+struct MemValue 
+{
   ValueType type;
   std::string value;
 
-  MemValue(SequenceNumber seq, ValueType t, const std::string& v)
-    : seqnum(seq), type(t), value(v) {}
+  MemValue(ValueType t, const std::string& v)
+    : type(t), value(v) {}
 
-  MemValue(SequenceNumber seq, ValueType t)
-    : seqnum(seq), type(t) {}
+  MemValue(ValueType t)
+    : type(t) {}
 
   friend std::ostream& operator << (std::ostream& os, const MemValue& m)
   {
-    os << m.seqnum << ":" << m.type << ":" << m.value;
+    os << m.type << ":" << m.value;
     return os;
   }
 };
 
-typedef std::multimap<std::string, MemValue> InMemKV; // key -> value
+struct MemKey
+{
+  std::string key;
+  SequenceNumber seqnum;
+
+  MemKey(SequenceNumber s, const std::string& k)
+    : key(k), seqnum(s) {}
+
+  friend std::ostream& operator << (std::ostream& os, const MemKey& m)
+  {
+    os << m.key << ":" << m.seqnum;
+    return os;
+  }
+
+};
+
+struct MemKeyCompare 
+{
+  // which is less
+  bool operator() (const MemKey& lhs, const MemKey& rhs) const
+  {
+    if (lhs.key < rhs.key) return true;
+    // keys with higher seqnum are placed earlier in scan
+    if ((lhs.key == rhs.key) && (lhs.seqnum > rhs.seqnum)) return true;
+    return false;
+  }
+};
+
+typedef std::map<MemKey, MemValue, MemKeyCompare> InMemKV; // key -> value
 typedef std::map<uint32_t, InMemKV> InMemDB; // cfid -> map
 
 static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
@@ -69,8 +98,11 @@ struct MapInserter : public WriteBatch::Handler {
       << std::endl;
 
     auto& kvmap = db_[column_family_id];
-    MemValue m(seq_, rocksdb::ValueType::kTypeColumnFamilyValue, value.ToString());
-    kvmap.insert(std::make_pair(key.ToString(), m));
+
+    MemKey k(seq_, key.ToString());
+    MemValue v(rocksdb::ValueType::kTypeColumnFamilyValue, value.ToString());
+    kvmap.insert(std::make_pair(k, v));
+
     return Status::OK();
   }
 
@@ -82,8 +114,9 @@ struct MapInserter : public WriteBatch::Handler {
       << std::endl;
 
     auto& kvmap = db_[kDefaultColumnFamilyIdx];
-    MemValue m(seq_, rocksdb::ValueType::kTypeValue, value.ToString());
-    kvmap.insert(std::make_pair(key.ToString(), m));
+    MemKey k(seq_, key.ToString());
+    MemValue v(rocksdb::ValueType::kTypeValue, value.ToString());
+    kvmap.insert(std::make_pair(k, v));
   }
 
   virtual Status DeleteCF(uint32_t column_family_id, 
@@ -93,8 +126,11 @@ struct MapInserter : public WriteBatch::Handler {
       << ":key=" << key.ToString()
       << std::endl;
     auto& kvmap = db_[column_family_id];
-    MemValue m(seq_, rocksdb::ValueType::kTypeColumnFamilyDeletion);
-    kvmap.insert(std::make_pair(key.ToString(), m));
+
+    MemKey k(seq_, key.ToString());
+    MemValue v(rocksdb::ValueType::kTypeColumnFamilyDeletion);
+    kvmap.insert(std::make_pair(k, v));
+
     return Status::OK();
   }
 
@@ -104,8 +140,10 @@ struct MapInserter : public WriteBatch::Handler {
       << ":key=" << key.ToString()
       << std::endl;
     auto& kvmap = db_[kDefaultColumnFamilyIdx];
-    MemValue m(seq_, rocksdb::ValueType::kTypeDeletion);
-    kvmap.insert(std::make_pair(key.ToString(), m));
+
+    MemKey k(seq_, key.ToString());
+    MemValue v(rocksdb::ValueType::kTypeDeletion);
+    kvmap.insert(std::make_pair(k, v));
   }
 
   virtual void LogData(const Slice& blob)
@@ -164,13 +202,13 @@ void readWork()
 
 
     ReplLookupRequest* req = reinterpret_cast<ReplLookupRequest*>(buf);
-    std::string lookupKey(req->buf, req->size);
+    MemKey lookupKey(req->seq, std::string(req->buf, req->size));
     uint32_t cfid = req->cfid;
 
     std::cout 
       << "read from ReadSocket size=" << readSz 
       << ":cfid=" << cfid
-      << ":key=" << lookupKey
+      << ":key=" << lookupKey.key
       << ":db map size=" << db.size()
       << ":seq=" << req->seq
       << std::endl;
@@ -182,27 +220,40 @@ void readWork()
     if (iter != db.end())
     {
       auto& kvmap = iter->second;
-      auto ret = kvmap.equal_range(lookupKey);
-      for (auto it = ret.first; it != ret.second; it++)
+      auto it = kvmap.lower_bound(lookupKey);
+      MemKey endKey(0 , std::string(req->buf, req->size));
+      auto end_iter = kvmap.upper_bound(endKey);
+      for (; it != end_iter; it ++)
       {
         std::cout << "found value=" << it->second << " for key=" << lookupKey << std::endl;
 
+        // CHECK IF key matches requested key
         MemValue& val = it->second;
 
         // TODO process ValueType = delete
         totalSz += val.value.size();
         resp = (ReplLookupResponse*)malloc(totalSz);
-        resp->found = true;
+        resp->found = ((val.type != rocksdb::ValueType::kTypeDeletion) && (val.type != rocksdb::ValueType::kTypeColumnFamilyDeletion));
         memcpy(resp->buf, val.value.data(), val.value.size());
         resp->size = val.value.size();
+        resp->status = Status::Code::kOk;
         break;
+      }
+      if (resp == nullptr)
+      {
+        // key not found
+        resp = (ReplLookupResponse*)malloc(totalSz);
+        resp->found = false;
+        resp->size = 0;
+        resp->status = Status::Code::kOk;
+        std::cout << "iter not finding key=" << lookupKey << std::endl;
       }
     } 
     else 
     {
       resp = (ReplLookupResponse*)malloc(totalSz);
       resp->size = 0;
-      resp->found = false;
+      resp->status = Status::Code::kInvalidArgument;
       std::cout << "not found cf=" << cfid << std::endl;
     }
 
@@ -275,10 +326,10 @@ int main(int argc, char* argv[])
     while (processedOff < readOff) {
 
       // assert that readOff - processedOff > value being read
-      ReplServerBlock* sw
-        = (ReplServerBlock*)(buf + processedOff);
+      ReplWALUpdate* sw
+        = (ReplWALUpdate*)(buf + processedOff);
 
-      if (sw->size <= (readOff - processedOff - sizeof(ReplServerBlock))) {
+      if (sw->size <= (readOff - processedOff - sizeof(ReplWALUpdate))) {
 
         rocksdb::WriteBatch batch;
         rocksdb::Slice slice(sw->buf, sw->size);
@@ -291,7 +342,7 @@ int main(int argc, char* argv[])
           << ":num updates in batch=" << batch.Count()
           << std::endl;
 
-        processedOff += sizeof(ReplServerBlock) + sw->size;
+        processedOff += sizeof(ReplWALUpdate) + sw->size;
 
         MapInserter handler(sw->seq, db);
         batch.Iterate(&handler);

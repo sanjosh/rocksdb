@@ -34,12 +34,15 @@ int main() {
   assert(s.ok());
 
   // Put key-value
-  std::string value = "uniqueval";
-  s = db->Put(WriteOptions(), "key1", value);
-  assert(s.ok());
+  {
+    std::string value = "uniqueval";
+    s = db->Put(WriteOptions(), "key1", value);
+    assert(s.ok());
+  }
 
   // atomically apply a set of updates
   {
+    std::string value = "uniqueval";
     WriteBatch batch;
     batch.Put("key2", value);
     batch.Put("key3", value);
@@ -47,7 +50,8 @@ int main() {
   }
 
   // Put key-value
-  for (int i = 0; i < 100; i++) {
+  for (int i = 0; i < 100; i++) 
+  {
     std::string key = "key_" + std::to_string(i);
     std::string value = "value_" + std::to_string(10 + i);
     s = db->Put(WriteOptions(), key, value);
@@ -57,11 +61,12 @@ int main() {
 
   for (int i = 0; i < 100; i++) 
   {
+    std::string returnValue;
     std::string key = "key_" + std::to_string(i);
-    s = db->Get(ReadOptions(), key, &value);
-    std::cout << "Get key=" << key 
+    s = db->Get(ReadOptions(), key, &returnValue);
+    std::cout << "Obtained key=" << key 
       << ":status=" << s.ToString() 
-      << ":value=" << value
+      << ":value=" << returnValue
       << std::endl;
   }
 
@@ -79,11 +84,12 @@ int main() {
 
   for (int i = 0; i < 100; i++) 
   {
+    std::string returnValue;
     std::string key = "key_" + std::to_string(i);
-    s = db->Get(ReadOptions(), key, &value);
+    s = db->Get(ReadOptions(), key, &returnValue);
     std::cout << "Get key=" << key 
       << ":status=" << s.ToString() 
-      << ":value=" << value
+      << ":value=" << returnValue
       << std::endl;
   }
 

@@ -160,28 +160,5 @@ class WriteBatchInternal {
   static size_t AppendedByteSize(size_t leftByteSize, size_t rightByteSize);
 };
 
-// communication format between rocksdb and Offloader
-struct ReplServerBlock
-{
-  size_t size;
-  SequenceNumber seq;
-  char buf[0];
-};
-
-struct ReplLookupRequest
-{
-  size_t size;
-  uint32_t cfid; // column family id
-  SequenceNumber seq;
-  char buf[0];
-};
-
-struct ReplLookupResponse
-{
-  // TODO differentiate between key found and key deleted
-  size_t size;
-  bool found;
-  char buf[0];
-};
 
 }  // namespace rocksdb
