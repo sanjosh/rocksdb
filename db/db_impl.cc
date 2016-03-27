@@ -3383,7 +3383,10 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
 
   bool skip_memtable =
       (read_options.read_tier == kPersistedTier && has_unpersisted_data_);
+  (void) skip_memtable;
   bool done = false;
+
+  /*
   if (!skip_memtable) {
     if (sv->mem->Get(lkey, value, &s, &merge_context)) {
       done = true;
@@ -3393,11 +3396,23 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
       RecordTick(stats_, MEMTABLE_HIT);
     }
   }
+  bool key_exists = false;
+  // code to query SST will be removed later TODO Offloader
   if (!done) {
     PERF_TIMER_GUARD(get_from_output_files_time);
     sv->current->Get(read_options, lkey, value, &s, &merge_context,
-                     value_found);
+                     value_found, &key_exists);
     RecordTick(stats_, MEMTABLE_MISS);
+  }
+  */
+
+  // if key doesn't exist in previous tier
+  // see comments to Version::Get header file for this check
+  if (!done) {
+    // TODO PERF_TIMER_GUARD(get_from_output_files_time);
+    // TODO support merge_context 
+    s = RemoteGetImpl(read_options, column_family, key, snapshot, value, value_found);
+    // TODO RecordTick(stats_, MEMTABLE_MISS);
   }
 
   {

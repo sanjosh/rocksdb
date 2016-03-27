@@ -19,6 +19,8 @@
 
 using rocksdb::WriteBatch;
 using rocksdb::ReplServerBlock;
+using rocksdb::ReplLookupResponse;
+using rocksdb::ReplLookupRequest;
 using rocksdb::Slice;
 using rocksdb::Status;
 using rocksdb::ValueType;
@@ -155,7 +157,7 @@ void readWork()
 
   while (!eof) {
     bzero(buf, sizeof(buf));
-    ssize_t readSz = read(newSocket, buf, sizeof(buf));
+    const ssize_t readSz = read(newSocket, buf, sizeof(buf));
     if (readSz <= 0) {
       eof = true;
     }
@@ -163,6 +165,16 @@ void readWork()
     std::cout 
       << "read from ReadSocket size=" << readSz 
       << std::endl;
+
+    ReplLookupResponse resp;
+    resp.size = 0;
+    resp.found = false;
+
+    const ssize_t writeSz = write(newSocket, (const void*)&resp, sizeof(resp));
+    if (writeSz != sizeof(resp)) {
+      std::cout << "response failed in readWork" << std::endl;
+      eof = true;
+    }
   }
 
   close(newSocket);

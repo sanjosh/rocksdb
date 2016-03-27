@@ -129,4 +129,59 @@ void DBImpl::ReplThreadBody(void* arg)
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
 }
 
+Status DBImpl::RemoteGetImpl(const ReadOptions& options, 
+  ColumnFamilyHandle* column_family,
+  const Slice& key, 
+  SequenceNumber seq,
+  std::string* value,
+  bool* value_found)
+{
+  Status status;
+
+  DBImpl::ReplThreadInfo* t = &this->repl_thread_info_;
+  auto& logger = db_options_.info_log;
+
+  do {
+    const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();
+
+    const ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
+
+    const ssize_t writeSz = write(t->readSocket, (const void*)lreq, totalSz);
+
+    free((void*)lreq);
+
+    if (writeSz != totalSz) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl socket write failed");
+      status = Status::IOError("Repl socket write failed");
+      break;
+    }
+
+    char response[8192]; // max response size?
+
+    const ssize_t readSz = read(t->readSocket, (void*)response, totalSz);
+
+    if (readSz < (ssize_t)sizeof(ReplLookupResponse)) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl socket read failed");
+      status = Status::IOError("Repl socket read failed");
+      break;
+    }
+
+    ReplLookupResponse *lresp = reinterpret_cast<ReplLookupResponse*>(response);
+
+    if (lresp->found) {
+      if (value_found) {
+        *value_found = lresp->found; 
+      }
+      if (value) {
+        value->assign(lresp->buf, lresp->size);
+      }
+      status = Status::OK();
+    } else {
+      status = Status::NotFound();
+    }
+  } while (0);
+  
+  return status;
+}
+
 }

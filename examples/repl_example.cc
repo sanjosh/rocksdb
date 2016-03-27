@@ -38,8 +38,9 @@ int main() {
   std::string value;
   // get value
   s = db->Get(ReadOptions(), "key1", &value);
-  assert(s.ok());
-  assert(value == "value");
+  assert(s.IsNotFound());
+  //assert(s.ok());
+  //assert(value == "value");
 
   // atomically apply a set of updates
   {
@@ -52,8 +53,9 @@ int main() {
   s = db->Get(ReadOptions(), "key1", &value);
   assert(s.IsNotFound());
 
-  db->Get(ReadOptions(), "key2", &value);
-  assert(value == "value");
+  s = db->Get(ReadOptions(), "key2", &value);
+  assert(s.IsNotFound());
+  //assert(value == "value");
 
   // Put key-value
   for (int i = 0; i < 100; i++) {

@@ -168,4 +168,18 @@ struct ReplServerBlock
   char buf[0];
 };
 
+struct ReplLookupRequest
+{
+  size_t size;
+  SequenceNumber seq;
+  char buf[0];
+};
+
+struct ReplLookupResponse
+{
+  size_t size;
+  bool found;
+  char buf[0];
+};
+
 }  // namespace rocksdb

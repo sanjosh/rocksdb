@@ -63,6 +63,13 @@ class DBImpl : public DB {
 
   static void ReplThreadBody(void* arg);
 
+  Status RemoteGetImpl(const ReadOptions& options, 
+    ColumnFamilyHandle* column_family,
+    const Slice& key, 
+    SequenceNumber snapshot, 
+    std::string* value,
+    bool* value_found = nullptr);
+
   struct ReplThreadInfo {
     DBImpl* db = nullptr;
     std::atomic<bool> stop;
