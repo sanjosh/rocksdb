@@ -144,7 +144,11 @@ Status DBImpl::RemoteGetImpl(const ReadOptions& options,
   do {
     const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();
 
-    const ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
+    ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
+    lreq->size = key.size();
+    lreq->cfid = column_family->GetID();
+    memcpy(lreq->buf, key.data(), lreq->size);
+    lreq->seq = seq;
 
     const ssize_t writeSz = write(t->readSocket, (const void*)lreq, totalSz);
 

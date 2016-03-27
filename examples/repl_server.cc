@@ -47,7 +47,7 @@ struct MemValue {
 typedef std::multimap<std::string, MemValue> InMemKV; // key -> value
 typedef std::map<uint32_t, InMemKV> InMemDB; // cfid -> map
 
-static constexpr uint32_t defaultColumnFamilyIdx = 100; // TODO
+static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
 
 struct MapInserter : public WriteBatch::Handler {
 
@@ -77,11 +77,11 @@ struct MapInserter : public WriteBatch::Handler {
   virtual void Put(const Slice& key,
     const Slice& value) override
   {
-    std::cout << "inserting into cf=default" 
+    std::cout << "inserting into cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
       << std::endl;
 
-    auto& kvmap = db_[defaultColumnFamilyIdx];
+    auto& kvmap = db_[kDefaultColumnFamilyIdx];
     MemValue m(seq_, rocksdb::ValueType::kTypeValue, value.ToString());
     kvmap.insert(std::make_pair(key.ToString(), m));
   }
@@ -100,10 +100,10 @@ struct MapInserter : public WriteBatch::Handler {
 
   virtual void Delete(const Slice& key)
   {
-    std::cout << "deleting from cf=default" 
+    std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
       << std::endl;
-    auto& kvmap = db_[defaultColumnFamilyIdx];
+    auto& kvmap = db_[kDefaultColumnFamilyIdx];
     MemValue m(seq_, rocksdb::ValueType::kTypeDeletion);
     kvmap.insert(std::make_pair(key.ToString(), m));
   }
@@ -120,8 +120,8 @@ struct MapInserter : public WriteBatch::Handler {
 };
 
 InMemDB db;
-static constexpr int port = 8192;
-static constexpr int readPort = port + 1;
+static constexpr int walPort = 8192;
+static constexpr int readPort = walPort + 1;
 
 void readWork()
 {
@@ -140,7 +140,7 @@ void readWork()
   bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
 
   if(listen(listenSocket,5)==0)
-    printf("Listening\n");
+    printf("Listening on %d\n", readPort);
   else {
     printf("Error\n");
     pthread_exit(0);
@@ -162,16 +162,52 @@ void readWork()
       eof = true;
     }
 
+
+    ReplLookupRequest* req = reinterpret_cast<ReplLookupRequest*>(buf);
+    std::string lookupKey(req->buf, req->size);
+    uint32_t cfid = req->cfid;
+
     std::cout 
       << "read from ReadSocket size=" << readSz 
+      << ":cfid=" << cfid
+      << ":key=" << lookupKey
+      << ":db map size=" << db.size()
+      << ":seq=" << req->seq
       << std::endl;
 
-    ReplLookupResponse resp;
-    resp.size = 0;
-    resp.found = false;
+    ReplLookupResponse* resp = nullptr;
+    size_t totalSz = sizeof(*resp);
 
-    const ssize_t writeSz = write(newSocket, (const void*)&resp, sizeof(resp));
-    if (writeSz != sizeof(resp)) {
+    auto iter = db.find(cfid);
+    if (iter != db.end())
+    {
+      auto& kvmap = iter->second;
+      auto ret = kvmap.equal_range(lookupKey);
+      for (auto it = ret.first; it != ret.second; it++)
+      {
+        std::cout << "found value=" << it->second << " for key=" << lookupKey << std::endl;
+
+        MemValue& val = it->second;
+
+        // TODO process ValueType = delete
+        totalSz += val.value.size();
+        resp = (ReplLookupResponse*)malloc(totalSz);
+        resp->found = true;
+        memcpy(resp->buf, val.value.data(), val.value.size());
+        resp->size = val.value.size();
+        break;
+      }
+    } 
+    else 
+    {
+      resp = (ReplLookupResponse*)malloc(totalSz);
+      resp->size = 0;
+      resp->found = false;
+      std::cout << "not found cf=" << cfid << std::endl;
+    }
+
+    const ssize_t writeSz = write(newSocket, (const void*)resp, totalSz);
+    if (writeSz != totalSz) {
       std::cout << "response failed in readWork" << std::endl;
       eof = true;
     }
@@ -193,14 +229,14 @@ int main(int argc, char* argv[])
   listenSocket = socket(PF_INET, SOCK_STREAM, 0);
   
   serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(8192);
+  serverAddr.sin_port = htons(walPort);
   serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
   memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
 
   bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
 
   if(listen(listenSocket,5)==0)
-    printf("Listening\n");
+    printf("Listening on %d\n", walPort);
   else {
     printf("Error\n");
     exit(1);

@@ -171,12 +171,14 @@ struct ReplServerBlock
 struct ReplLookupRequest
 {
   size_t size;
+  uint32_t cfid; // column family id
   SequenceNumber seq;
   char buf[0];
 };
 
 struct ReplLookupResponse
 {
+  // TODO differentiate between key found and key deleted
   size_t size;
   bool found;
   char buf[0];

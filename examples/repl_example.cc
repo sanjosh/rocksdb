@@ -3,6 +3,7 @@
 // LICENSE file in the root directory of this source tree. An additional grant
 // of patent rights can be found in the PATENTS file in the same directory.
 #include <cstdio>
+#include <iostream>
 #include <string>
 #include <unistd.h>
 
@@ -33,38 +34,59 @@ int main() {
   assert(s.ok());
 
   // Put key-value
-  s = db->Put(WriteOptions(), "key1", "value");
+  std::string value = "uniqueval";
+  s = db->Put(WriteOptions(), "key1", value);
   assert(s.ok());
-  std::string value;
-  // get value
-  s = db->Get(ReadOptions(), "key1", &value);
-  assert(s.IsNotFound());
-  //assert(s.ok());
-  //assert(value == "value");
 
   // atomically apply a set of updates
   {
     WriteBatch batch;
-    batch.Delete("key1");
     batch.Put("key2", value);
+    batch.Put("key3", value);
     s = db->Write(WriteOptions(), &batch);
   }
-
-  s = db->Get(ReadOptions(), "key1", &value);
-  assert(s.IsNotFound());
-
-  s = db->Get(ReadOptions(), "key2", &value);
-  assert(s.IsNotFound());
-  //assert(value == "value");
 
   // Put key-value
   for (int i = 0; i < 100; i++) {
     std::string key = "key_" + std::to_string(i);
-    s = db->Put(WriteOptions(), key, "value");
+    std::string value = "value_" + std::to_string(10 + i);
+    s = db->Put(WriteOptions(), key, value);
     assert(s.ok());
     usleep(100); // delayed write
   }
+
+  for (int i = 0; i < 100; i++) 
+  {
+    std::string key = "key_" + std::to_string(i);
+    s = db->Get(ReadOptions(), key, &value);
+    std::cout << "Get key=" << key 
+      << ":status=" << s.ToString() 
+      << ":value=" << value
+      << std::endl;
+  }
+
+  {
+    WriteBatch batch;
+    for (int i = 0; i < 100; i++) {
+      std::string key = "key_" + std::to_string(i);
+      batch.Delete(key);
+    }
+    s = db->Write(WriteOptions(), &batch);
+    assert(s.ok());
+  }
   
+  usleep(10000);
+
+  for (int i = 0; i < 100; i++) 
+  {
+    std::string key = "key_" + std::to_string(i);
+    s = db->Get(ReadOptions(), key, &value);
+    std::cout << "Get key=" << key 
+      << ":status=" << s.ToString() 
+      << ":value=" << value
+      << std::endl;
+  }
+
   usleep(10000);
 
   delete db;
