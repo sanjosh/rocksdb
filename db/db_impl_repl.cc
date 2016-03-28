@@ -14,6 +14,8 @@
 
 namespace rocksdb {
 
+static constexpr size_t MaxResponseSize = 8192;
+
 static int ConnectSocket(std::string& addr, int port, int& sock_fd)
 {
   sock_fd = socket(PF_INET, SOCK_STREAM, 0);
@@ -100,8 +102,8 @@ void DBImpl::ReplThreadBody(void* arg)
       // i.e. intermediate numbers are skipped
       // Now, if you ask for a WriteBatch starting from seq M+1
       // GetUpdatesSince() will return the update with seq=M even 
-      // though it is less than what you asked, because one of 
-      // the updates actually havs seq=M
+      // though it is less than what you asked, because it is 
+      // giving back the update that actually has seq=M
       currentSeqNum = res.sequence + res.writeBatchPtr->Count() - 1;
 
       const ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
@@ -162,7 +164,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
       break;
     }
 
-    char response[8192]; // max response size?
+    char response[MaxResponseSize]; // max response size?
 
     const ssize_t readSz = read(t->readSocket, (void*)response, totalSz);
 
@@ -193,14 +195,20 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 class ReplIterator : public InternalIterator {
 public:
   ReplIterator(ReplThreadInfo& repl_thread_info, 
+    uint32_t cfid,
+    SequenceNumber seqnum,
     const ReadOptions& read_options)
     : repl_thread_info_(repl_thread_info)
+    , cfid_(cfid)
+    , seqnum_(seqnum)
     , read_options_(read_options)
   {
   }
 
   ~ReplIterator() 
   {
+    ReplCursorClose op;
+    op.cursor_id = 0;
   }
 
   virtual bool Valid() const override 
@@ -208,20 +216,112 @@ public:
     return valid_;
   }
 
+  virtual void SeekInternal(ReplCursorOpen* oc) 
+  {
+    ReplThreadInfo* t = &repl_thread_info_;
+
+    do {
+      const ssize_t totalSz = sizeof(ReplCursorOpen) + oc->size;
+
+      const ssize_t writeSz = write(t->readSocket, (const void*)oc, totalSz);
+      if (writeSz != totalSz)
+      {
+        break;
+      }
+
+      ReplCursorOpenResponse resp;
+      const ssize_t readSz = read(t->readSocket, (void*)&resp, sizeof(resp));
+      if (readSz != sizeof(resp))
+      {
+        break;
+      }
+        
+      if (resp.status == Status::Code::kOk)
+      {
+        remote_cursor_id_ = resp.cursor_id;
+        valid_ = true;
+      }
+
+    } while (0);
+
+    delete oc;
+  }
+
   virtual void Seek(const Slice& k) override 
   {
+    ReplCursorOpen* oc = new (k.size()) ReplCursorOpen();
+    oc->cfid = cfid_;
+    oc->seqnum = seqnum_;
+    oc->size = k.size();
+    memcpy(oc->buf, k.data(), k.size());
+
+    SeekInternal(oc);
   }
   virtual void SeekToFirst() override 
   {
+    ReplCursorOpen* oc = new ReplCursorOpen();
+    oc->cfid = cfid_;
+    oc->seqnum = seqnum_;
+    oc->size = 0;
+    oc->seekFirst = true;
+
+    SeekInternal(oc);
   }
   virtual void SeekToLast() override 
   {
+    ReplCursorOpen* oc = new ReplCursorOpen();
+    oc->cfid = cfid_;
+    oc->seqnum = seqnum_;
+    oc->size = 0;
+    oc->seekLast = true;
+
+    SeekInternal(oc);
   }
   virtual void Next() override 
   {
+    ReplCursorNext next;
+    next.cursor_id = remote_cursor_id_;
+
+    ReplThreadInfo* t = &repl_thread_info_;
+
+    do {
+      const ssize_t totalSz = sizeof(ReplCursorNext);
+
+      const ssize_t writeSz = write(t->readSocket, (const void*)&next, totalSz);
+      if (writeSz != totalSz)
+      {
+        valid_ = false;
+        break;
+      }
+
+      char buf[MaxResponseSize];
+      const ssize_t readSz = read(t->readSocket, (void*)buf, MaxResponseSize);
+
+      ReplCursorNextResponse *resp = reinterpret_cast<ReplCursorNextResponse*>(buf);
+
+      if ((readSz < (ssize_t)sizeof(resp))
+       || ((readSz != (ssize_t)(sizeof(*resp) + resp->size))))
+      {
+        valid_ = false;
+      }
+      else 
+      {
+        if ((resp->status != Status::Code::kOk) ||
+          (resp->is_eof))
+        {
+          valid_ = false;
+        }
+        else 
+        {
+          // copy buf
+          valid_ = true;
+        }
+      }
+    } while (0);
   }
   virtual void Prev() override 
   {
+    assert("not impl" == 0);
   }
   virtual Slice key() const override
   {
@@ -233,7 +333,7 @@ public:
   }
   virtual Status status() const override
   {
-    return Status::OK();
+    return remoteStatus_;
   }
   virtual Status PinData() override
   {
@@ -250,29 +350,38 @@ public:
 
   private:
 
+  ReplThreadInfo& repl_thread_info_;
+
+  uint32_t cfid_;
+  SequenceNumber seqnum_;
+
+  int32_t remote_cursor_id_ = -1; // TODO create invalid 
+
   Slice key_;
   Slice value_;
+  Status remoteStatus_;
 
-  ReplThreadInfo& repl_thread_info_;
   ReadOptions read_options_;
 
-  bool valid_;
+  bool valid_ = false;
 
-  ReplIterator(const ReplIterator& );
-  void operator =(const ReplIterator& );
-
+  ReplIterator(const ReplIterator&) = delete;
+  void operator =(const ReplIterator&) = delete;
 
 };
 
-void ReplThreadInfo::AddIterators(const ReadOptions& read_options,
-                           const EnvOptions& soptions,
-                           MergeIteratorBuilder* merge_iter_builder) {
+void ReplThreadInfo::AddIterators(uint32_t cfid,
+  const ReadOptions& read_options,
+  const EnvOptions& soptions,
+  MergeIteratorBuilder* merge_iter_builder) {
+
+  SequenceNumber seqnum = 0; // do we need to retrieve based on snapshot ?
 
   auto* arena = merge_iter_builder->GetArena();
 
   auto mem = arena->AllocateAligned(sizeof(ReplIterator));
   merge_iter_builder->AddIterator(
-    new (mem) ReplIterator(*this, read_options));
+    new (mem) ReplIterator(*this, cfid, seqnum, read_options));
 }
 
 }

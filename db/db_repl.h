@@ -36,7 +36,8 @@ struct ReplThreadInfo {
     std::string* value,
     bool* value_found = nullptr);
 
-  void AddIterators(const ReadOptions& read_options,
+  void AddIterators(uint32_t cfid,
+    const ReadOptions& read_options,
     const EnvOptions& soptions,
     MergeIteratorBuilder* merge_iter_builder);
 };
@@ -102,8 +103,19 @@ struct ReplCursorOpen
   size_t size;
   uint32_t cfid;
   SequenceNumber seqnum;
-  uint32_t numKeysPerNext;
+  uint32_t numKeysPerNext = 1;
+  bool seekFirst = false;
+  bool seekLast = false;
   char buf[0]; // has key
+
+  static void* operator new (size_t sz, size_t extra = 0)
+  {
+    return malloc(sz + extra);
+  }
+  static void operator delete (void* ptr)
+  {
+    free(ptr);
+  }
 };
 
 struct ReplCursorOpenResponse
