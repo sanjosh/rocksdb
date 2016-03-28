@@ -56,6 +56,21 @@ class WriteCallback;
 struct JobContext;
 struct ExternalSstFileInfo;
 
+struct ReplThreadInfo {
+  DBImpl* db = nullptr;
+  std::atomic<bool> stop;
+  std::atomic<bool> has_stopped;
+  std::atomic<bool> started;
+  int socket = -1; // used to send WAL to offloader
+  int readSocket = -1; // used to query offloader
+  int port = 0;
+  std::string addr;
+
+  void AddIterators(const ReadOptions& read_options,
+    const EnvOptions& soptions,
+    MergeIteratorBuilder* merge_iter_builder);
+};
+
 class DBImpl : public DB {
  public:
   DBImpl(const DBOptions& options, const std::string& dbname);
@@ -70,16 +85,6 @@ class DBImpl : public DB {
     std::string* value,
     bool* value_found = nullptr);
 
-  struct ReplThreadInfo {
-    DBImpl* db = nullptr;
-    std::atomic<bool> stop;
-    std::atomic<bool> has_stopped;
-    std::atomic<bool> started;
-    int socket = -1; // used to send WAL to offloader
-    int readSocket = -1; // used to query offloader
-    int port = 0;
-    std::string addr;
-  };
 
   // Implementations of the DB interface
   using DB::Put;
@@ -947,5 +952,6 @@ static void ClipToRange(T* ptr, V minvalue, V maxvalue) {
   if (static_cast<V>(*ptr) > maxvalue) *ptr = maxvalue;
   if (static_cast<V>(*ptr) < minvalue) *ptr = minvalue;
 }
+
 
 }  // namespace rocksdb

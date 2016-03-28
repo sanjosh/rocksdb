@@ -3284,6 +3284,9 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
   // Collect iterators for files in L0 - Ln
   super_version->current->AddIterators(read_options, env_options_,
                                        &merge_iter_builder);
+
+  // repl_thread_info_->AddIterators(read_options, env_options, &merge_iter_builder);
+
   internal_iter = merge_iter_builder.Finish();
   IterState* cleanup = new IterState(this, &mutex_, super_version);
   internal_iter->RegisterCleanup(CleanupIteratorState, cleanup, nullptr);

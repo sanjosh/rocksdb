@@ -3,7 +3,8 @@
 #include "db/auto_roll_logger.h"
 #include "db/write_batch_internal.h" 
 #include "rocksdb/env.h" // Env
-#include "rocksdb/status.h" // Env
+#include "rocksdb/status.h" // Status
+#include "table/merger.h" // MergeIteratorBuilder
 
 #include <stdio.h> // malloc
 #include <unistd.h> // write
@@ -37,7 +38,7 @@ static int ConnectSocket(std::string& addr, int port, int& sock_fd)
 
 void DBImpl::ReplThreadBody(void* arg)
 {
-  DBImpl::ReplThreadInfo* t = reinterpret_cast<DBImpl::ReplThreadInfo*>(arg);
+  ReplThreadInfo* t = reinterpret_cast<ReplThreadInfo*>(arg);
   t->started.store(true, std::memory_order_release);
 
   auto& logger = t->db->db_options_.info_log;
@@ -139,7 +140,7 @@ Status DBImpl::RemoteGetImpl(const ReadOptions& options,
 {
   Status status;
 
-  DBImpl::ReplThreadInfo* t = &this->repl_thread_info_;
+  ReplThreadInfo* t = &this->repl_thread_info_;
   auto& logger = db_options_.info_log;
 
   do {
@@ -187,6 +188,91 @@ Status DBImpl::RemoteGetImpl(const ReadOptions& options,
   } while (0);
   
   return status;
+}
+
+class ReplIterator : public InternalIterator {
+public:
+  ReplIterator(ReplThreadInfo& repl_thread_info, 
+    const ReadOptions& read_options)
+    : repl_thread_info_(repl_thread_info)
+    , read_options_(read_options)
+  {
+  }
+
+  ~ReplIterator() 
+  {
+  }
+
+  virtual bool Valid() const override 
+  {
+    return valid_;
+  }
+
+  virtual void Seek(const Slice& k) override 
+  {
+  }
+  virtual void SeekToFirst() override 
+  {
+  }
+  virtual void SeekToLast() override 
+  {
+  }
+  virtual void Next() override 
+  {
+  }
+  virtual void Prev() override 
+  {
+  }
+  virtual Slice key() const override
+  {
+    return key_;
+  }
+  virtual Slice value() const override
+  {
+    return value_;
+  }
+  virtual Status status() const override
+  {
+    return Status::OK();
+  }
+  virtual Status PinData() override
+  {
+    return Status::OK();
+  }
+  virtual Status ReleasePinnedData() override
+  {
+    return Status::OK();
+  }
+  virtual bool IsKeyPinned() const override
+  {
+    return true;
+  }
+
+  private:
+
+  Slice key_;
+  Slice value_;
+
+  ReplThreadInfo& repl_thread_info_;
+  ReadOptions read_options_;
+
+  bool valid_;
+
+  ReplIterator(const ReplIterator& );
+  void operator =(const ReplIterator& );
+
+
+};
+
+void ReplThreadInfo::AddIterators(const ReadOptions& read_options,
+                           const EnvOptions& soptions,
+                           MergeIteratorBuilder* merge_iter_builder) {
+
+  auto* arena = merge_iter_builder->GetArena();
+
+  auto mem = arena->AllocateAligned(sizeof(ReplIterator));
+  merge_iter_builder->AddIterator(
+    new (mem) ReplIterator(*this, read_options));
 }
 
 }
