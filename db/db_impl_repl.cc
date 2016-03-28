@@ -251,7 +251,7 @@ public:
   {
     ReplCursorOpen* oc = new (k.size()) ReplCursorOpen();
     oc->cfid = cfid_;
-    oc->seqnum = seqnum_;
+    oc->seq = seqnum_;
     oc->size = k.size();
     memcpy(oc->buf, k.data(), k.size());
 
@@ -261,7 +261,7 @@ public:
   {
     ReplCursorOpen* oc = new ReplCursorOpen();
     oc->cfid = cfid_;
-    oc->seqnum = seqnum_;
+    oc->seq = seqnum_;
     oc->size = 0;
     oc->seekFirst = true;
 
@@ -271,7 +271,7 @@ public:
   {
     ReplCursorOpen* oc = new ReplCursorOpen();
     oc->cfid = cfid_;
-    oc->seqnum = seqnum_;
+    oc->seq = seqnum_;
     oc->size = 0;
     oc->seekLast = true;
 

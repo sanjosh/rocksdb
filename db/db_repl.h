@@ -102,7 +102,7 @@ struct ReplCursorOpen
   ReplRequestOp op = OP_CURSOR_OPEN;
   size_t size;
   uint32_t cfid;
-  SequenceNumber seqnum;
+  SequenceNumber seq;
   uint32_t numKeysPerNext = 1;
   bool seekFirst = false;
   bool seekLast = false;
