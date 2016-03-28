@@ -3414,7 +3414,12 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
   if (!done) {
     // TODO PERF_TIMER_GUARD(get_from_output_files_time);
     // TODO support merge_context 
-    s = RemoteGetImpl(read_options, column_family, key, snapshot, value, value_found);
+    s = repl_thread_info_.Get(read_options, 
+      column_family, 
+      key, 
+      snapshot, 
+      value, 
+      value_found);
     // TODO RecordTick(stats_, MEMTABLE_MISS);
   }
 
@@ -5632,6 +5637,7 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
       (impl->db_options_.repl_port != 0)) {
     Log(InfoLogLevel::INFO_LEVEL, impl->db_options_.info_log, "starting repl thread");
     impl->repl_thread_info_.db = impl;
+    impl->repl_thread_info_.info_log = impl->db_options_.info_log;
     impl->repl_thread_info_.stop = false;
     impl->repl_thread_info_.has_stopped = false;
     impl->repl_thread_info_.port = impl->db_options_.repl_port;

@@ -87,7 +87,7 @@ int main() {
     std::string returnValue;
     std::string key = "key_" + std::to_string(i);
     s = db->Get(ReadOptions(), key, &returnValue);
-    std::cout << "Get key=" << key 
+    std::cout << "Obtained key=" << key 
       << ":status=" << s.ToString() 
       << ":value=" << returnValue
       << std::endl;

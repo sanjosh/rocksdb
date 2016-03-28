@@ -2,8 +2,45 @@
 
 #include "rocksdb/types.h"
 #include "rocksdb/status.h"
+#include <string>
+#include <atomic>
 
 namespace rocksdb {
+
+class Logger;
+class DBImpl;
+class MergeIteratorBuilder;
+class EnvOptions;
+class ReadOptions;
+class ColumnFamilyHandle;
+class Slice;
+
+struct ReplThreadInfo {
+
+  rocksdb::DBImpl* db = nullptr;
+  std::shared_ptr<rocksdb::Logger> info_log = nullptr;
+
+  std::atomic<bool> stop; // replace by cv
+  std::atomic<bool> has_stopped;
+  std::atomic<bool> started;
+
+  int socket = -1; // used to send WAL to offloader
+  int readSocket = -1; // used to query offloader
+  int port = 0;
+  std::string addr;
+
+  Status Get(const ReadOptions& options, 
+    ColumnFamilyHandle* column_family,
+    const Slice& key, 
+    SequenceNumber snapshot, 
+    std::string* value,
+    bool* value_found = nullptr);
+
+  void AddIterators(const ReadOptions& read_options,
+    const EnvOptions& soptions,
+    MergeIteratorBuilder* merge_iter_builder);
+};
+
 
 // communication format between rocksdb and Offloader
 struct ReplWALUpdate

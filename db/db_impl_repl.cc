@@ -41,7 +41,7 @@ void DBImpl::ReplThreadBody(void* arg)
   ReplThreadInfo* t = reinterpret_cast<ReplThreadInfo*>(arg);
   t->started.store(true, std::memory_order_release);
 
-  auto& logger = t->db->db_options_.info_log;
+  auto& logger = t->info_log;
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
   int err = ConnectSocket(t->addr, t->port, t->socket);
@@ -131,7 +131,7 @@ void DBImpl::ReplThreadBody(void* arg)
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
 }
 
-Status DBImpl::RemoteGetImpl(const ReadOptions& options, 
+Status ReplThreadInfo::Get(const ReadOptions& options, 
   ColumnFamilyHandle* column_family,
   const Slice& key, 
   SequenceNumber seq,
@@ -140,8 +140,8 @@ Status DBImpl::RemoteGetImpl(const ReadOptions& options,
 {
   Status status;
 
-  ReplThreadInfo* t = &this->repl_thread_info_;
-  auto& logger = db_options_.info_log;
+  ReplThreadInfo* t = this;
+  auto& logger = info_log;
 
   do {
     const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();

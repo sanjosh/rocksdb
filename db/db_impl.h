@@ -20,7 +20,8 @@
 #include "db/column_family.h"
 #include "db/compaction_job.h"
 #include "db/dbformat.h"
-#include "db/flush_job.h"
+#include "db/db_repl.h" // ReplThreadInfo
+#include "db/flush_job.h" 
 #include "db/flush_scheduler.h"
 #include "db/internal_stats.h"
 #include "db/log_writer.h"
@@ -56,35 +57,12 @@ class WriteCallback;
 struct JobContext;
 struct ExternalSstFileInfo;
 
-struct ReplThreadInfo {
-  DBImpl* db = nullptr;
-  std::atomic<bool> stop;
-  std::atomic<bool> has_stopped;
-  std::atomic<bool> started;
-  int socket = -1; // used to send WAL to offloader
-  int readSocket = -1; // used to query offloader
-  int port = 0;
-  std::string addr;
-
-  void AddIterators(const ReadOptions& read_options,
-    const EnvOptions& soptions,
-    MergeIteratorBuilder* merge_iter_builder);
-};
-
 class DBImpl : public DB {
  public:
   DBImpl(const DBOptions& options, const std::string& dbname);
   virtual ~DBImpl();
 
   static void ReplThreadBody(void* arg);
-
-  Status RemoteGetImpl(const ReadOptions& options, 
-    ColumnFamilyHandle* column_family,
-    const Slice& key, 
-    SequenceNumber snapshot, 
-    std::string* value,
-    bool* value_found = nullptr);
-
 
   // Implementations of the DB interface
   using DB::Put;
