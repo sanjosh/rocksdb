@@ -16,6 +16,8 @@ using namespace rocksdb;
 
 std::string kDBPath = "/tmp/rocksdb_repl_example";
 
+static constexpr size_t NumKeys = 5;
+
 int main() {
   DB* db;
   Options options;
@@ -34,23 +36,7 @@ int main() {
   assert(s.ok());
 
   // Put key-value
-  {
-    std::string value = "uniqueval";
-    s = db->Put(WriteOptions(), "key1", value);
-    assert(s.ok());
-  }
-
-  // atomically apply a set of updates
-  {
-    std::string value = "uniqueval";
-    WriteBatch batch;
-    batch.Put("key2", value);
-    batch.Put("key3", value);
-    s = db->Write(WriteOptions(), &batch);
-  }
-
-  // Put key-value
-  for (int i = 0; i < 100; i++) 
+  for (int i = 0; i < NumKeys; i++) 
   {
     std::string key = "key_" + std::to_string(i);
     std::string value = "value_" + std::to_string(10 + i);
@@ -59,7 +45,7 @@ int main() {
     usleep(100); // delayed write
   }
 
-  for (int i = 0; i < 100; i++) 
+  for (int i = 0; i < NumKeys; i++) 
   {
     std::string returnValue;
     std::string key = "key_" + std::to_string(i);
@@ -72,7 +58,7 @@ int main() {
 
   {
     WriteBatch batch;
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < NumKeys; i++) {
       std::string key = "key_" + std::to_string(i);
       batch.Delete(key);
     }
@@ -82,7 +68,7 @@ int main() {
   
   usleep(10000);
 
-  for (int i = 0; i < 100; i++) 
+  for (int i = 0; i < NumKeys; i++) 
   {
     std::string returnValue;
     std::string key = "key_" + std::to_string(i);

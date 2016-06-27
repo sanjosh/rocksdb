@@ -151,7 +151,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
     ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
     lreq->size = key.size();
     lreq->cfid = column_family->GetID();
-    memcpy(lreq->buf, key.data(), lreq->size);
+    memcpy(lreq->key, key.data(), lreq->size);
     lreq->seq = seq;
 
     const ssize_t writeSz = write(t->readSocket, (const void*)lreq, totalSz);
@@ -181,7 +181,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
         *value_found = lresp->found; 
       }
       if (value) {
-        value->assign(lresp->buf, lresp->size);
+        value->assign(lresp->value, lresp->size);
       }
       status = Status::OK();
     } else {

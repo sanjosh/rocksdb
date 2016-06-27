@@ -3392,29 +3392,32 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
   (void) skip_memtable;
   bool done = false;
 
-  /*
-  if (!skip_memtable) {
-    if (sv->mem->Get(lkey, value, &s, &merge_context)) {
-      done = true;
-      RecordTick(stats_, MEMTABLE_HIT);
-    } else if (sv->imm->Get(lkey, value, &s, &merge_context)) {
-      done = true;
-      RecordTick(stats_, MEMTABLE_HIT);
+  if (!repl_thread_info_.IsReplicated()) {
+
+// TODO enable this code later for both client and server
+    if (!skip_memtable) {
+      if (sv->mem->Get(lkey, value, &s, &merge_context)) {
+        done = true;
+        RecordTick(stats_, MEMTABLE_HIT);
+      } else if (sv->imm->Get(lkey, value, &s, &merge_context)) {
+        done = true;
+        RecordTick(stats_, MEMTABLE_HIT);
+      }
     }
+    bool key_exists = false;
+    // code to query SST will be removed later TODO Offloader
+    if (!done) {
+      PERF_TIMER_GUARD(get_from_output_files_time);
+      sv->current->Get(read_options, lkey, value, &s, &merge_context,
+                       value_found, &key_exists);
+      RecordTick(stats_, MEMTABLE_MISS);
+    }
+
   }
-  bool key_exists = false;
-  // code to query SST will be removed later TODO Offloader
-  if (!done) {
-    PERF_TIMER_GUARD(get_from_output_files_time);
-    sv->current->Get(read_options, lkey, value, &s, &merge_context,
-                     value_found, &key_exists);
-    RecordTick(stats_, MEMTABLE_MISS);
-  }
-  */
 
   // if key doesn't exist in previous tier
   // see comments to Version::Get header file for this check
-  if (!done) {
+  if ((!done) && repl_thread_info_.IsReplicated()) {
     // TODO PERF_TIMER_GUARD(get_from_output_files_time);
     // TODO support merge_context 
     s = repl_thread_info_.Get(read_options, 

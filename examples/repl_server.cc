@@ -4,11 +4,13 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <cassert>
 #include <string.h>
 #include <thread> 
 #include <map> // inmemory map
 #include <string> // key value
 
+#include <rocksdb/db.h>
 #include "rocksdb/types.h" // SequenceNumber
 #include "rocksdb/status.h" // Status
 #include "rocksdb/slice.h" // Slice
@@ -28,24 +30,7 @@ using rocksdb::Slice;
 using rocksdb::Status;
 using rocksdb::ValueType;
 using rocksdb::SequenceNumber;
-
-struct MemValue 
-{
-  ValueType type;
-  std::string value;
-
-  MemValue(ValueType t, const std::string& v)
-    : type(t), value(v) {}
-
-  MemValue(ValueType t)
-    : type(t) {}
-
-  friend std::ostream& operator << (std::ostream& os, const MemValue& m)
-  {
-    os << m.type << ":" << m.value;
-    return os;
-  }
-};
+using rocksdb::ColumnFamilyHandle;
 
 struct MemKey
 {
@@ -75,99 +60,77 @@ struct MemKeyCompare
   }
 };
 
-typedef std::map<MemKey, MemValue, MemKeyCompare> InMemKV; // key -> value
-typedef std::map<uint32_t, InMemKV> CFMap; // cfid -> map
-
-struct LocalCursor
-{
-  LocalCursor();
-
-  InMemKV::iterator iter;
-};
 
 static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
+static std::string kDBPath = "/tmp/repl_server";
 
-struct InMemDB
-{
-  CFMap columnFamilies_;
-  std::map<int32_t, LocalCursor*> openCursors_;
+struct DBWrapper {
 
-  InMemDB()
+  std::map<uint32_t, rocksdb::ColumnFamilyHandle*> handles_;
+  rocksdb::DB* rocksdb_;
+
+  void init(bool newInstance)
   {
-    InMemKV kv;
-    columnFamilies_.insert(std::make_pair(kDefaultColumnFamilyIdx, kv));
-  }
-
-  InMemKV& at(uint32_t column_family_id)
-  {
-    // dont use operator []; it creates entry if one doesnt exist
-    return columnFamilies_.at(column_family_id);
-  }
-
-  CFMap::iterator find(uint32_t column_family_id)
-  {
-    return columnFamilies_.find(column_family_id);
-  }
-
-  size_t size() const
-  {
-    return columnFamilies_.size();
-  }
-
-  CFMap::iterator end()
-  {
-    return columnFamilies_.end();
-  }
-
-  int32_t createCursor()
-  {
-    LocalCursor* nc = new LocalCursor;
-    int32_t cursor_id = openCursors_.size();
-    openCursors_.insert(std::make_pair(cursor_id, nc));
-    return cursor_id;
-  }
-
-  LocalCursor* getCursor(int32_t cursor_id)
-  {
-    // dont use operator []; it creates entry if one doesnt exist
-    auto iter = openCursors_.find(cursor_id);
-    if (iter != openCursors_.end())
-    {
-      return iter->second;
+    rocksdb::Options options;
+    if (newInstance) {
+      options.create_if_missing = true;
+      options.error_if_exists = false;
     }
-    return nullptr;
+
+    auto s = rocksdb::DB::Open(options, kDBPath, &rocksdb_);
+    assert(s.ok());
+
+    handles_.insert(std::make_pair(kDefaultColumnFamilyIdx,
+      rocksdb_->DefaultColumnFamily()));
+    // TODO need to open all existing cf if not new instance
   }
+
+  rocksdb::ColumnFamilyHandle* openHandle(uint32_t cfid)
+  {
+    rocksdb::ColumnFamilyHandle* cfptr{nullptr};
+    auto iter = handles_.find(cfid);
+    if (iter == handles_.end()) {
+      auto status = rocksdb_->CreateColumnFamily(rocksdb::ColumnFamilyOptions(),
+        std::to_string(cfid), &cfptr);
+      if (status.ok()) {
+        handles_.insert(std::make_pair(cfid, cfptr));
+      } else {
+        std::cerr << "failed to create cf= " << cfid;
+      }
+    }
+    cfptr = iter->second;
+    return cfptr;
+  }
+
 };
 
-
-InMemDB db;
+DBWrapper db;
 
 struct MapInserter : public WriteBatch::Handler {
 
-  InMemDB& db_;
+  DBWrapper& db_;
   SequenceNumber seq_;
 
   MapInserter() = delete;
 
   explicit MapInserter(SequenceNumber seq, 
-    InMemDB& db) 
+    DBWrapper& db) 
     : db_(db), seq_(seq) {}
 
-  virtual Status PutCF(uint32_t column_family_id, 
+  virtual Status PutCF(uint32_t cfid, 
     const Slice& key,
     const Slice& value) override
   {
-    std::cout << "inserting into cf=" << column_family_id 
+    std::cout << "inserting into cf=" << cfid 
       << ":key=" << key.ToString()
       << std::endl;
 
-    auto& kvmap = db_.at(column_family_id);
+    auto cf = db_.openHandle(cfid);
 
     MemKey k(seq_, key.ToString());
-    MemValue v(rocksdb::ValueType::kTypeColumnFamilyValue, value.ToString());
-    kvmap.insert(std::make_pair(k, v));
+    auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, key, value);
 
-    return Status::OK();
+    return status;
   }
 
   virtual void Put(const Slice& key,
@@ -177,23 +140,22 @@ struct MapInserter : public WriteBatch::Handler {
       << ":key=" << key.ToString()
       << std::endl;
 
-    auto& kvmap = db_.at(kDefaultColumnFamilyIdx);
     MemKey k(seq_, key.ToString());
-    MemValue v(rocksdb::ValueType::kTypeValue, value.ToString());
-    kvmap.insert(std::make_pair(k, v));
+    auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), key, value);
+    assert(status.ok());
   }
 
-  virtual Status DeleteCF(uint32_t column_family_id, 
+  virtual Status DeleteCF(uint32_t cfid, 
     const Slice& key)
   {
-    std::cout << "deleting from cf=" << column_family_id
+    std::cout << "deleting from cf=" << cfid
       << ":key=" << key.ToString()
       << std::endl;
-    auto& kvmap = db_.at(column_family_id);
+
+    auto cf = db_.openHandle(cfid);
 
     MemKey k(seq_, key.ToString());
-    MemValue v(rocksdb::ValueType::kTypeColumnFamilyDeletion);
-    kvmap.insert(std::make_pair(k, v));
+    db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, rocksdb::Slice(key.data(), key.size()));
 
     return Status::OK();
   }
@@ -203,11 +165,9 @@ struct MapInserter : public WriteBatch::Handler {
     std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
       << std::endl;
-    auto& kvmap = db_.at(kDefaultColumnFamilyIdx);
 
     MemKey k(seq_, key.ToString());
-    MemValue v(rocksdb::ValueType::kTypeDeletion);
-    kvmap.insert(std::make_pair(k, v));
+    db.rocksdb_->Delete(rocksdb::WriteOptions(), rocksdb::Slice(key.data(), key.size()));
   }
 
   virtual void LogData(const Slice& blob)
@@ -267,52 +227,44 @@ void readWork()
 
 
     ReplLookupRequest* req = reinterpret_cast<ReplLookupRequest*>(buf);
-    MemKey lookupKey(req->seq, std::string(req->buf, req->size));
+    std::string lookupKey(req->key, req->size);
     uint32_t cfid = req->cfid;
 
     std::cout 
       << "read from ReadSocket size=" << readSz 
       << ":cfid=" << cfid
-      << ":key=" << lookupKey.key
-      << ":db map size=" << db.size()
+      << ":key=" << lookupKey
+      << ":db map size=" << db.handles_.size()
       << ":seq=" << req->seq
       << std::endl;
 
     ReplLookupResponse* resp = nullptr;
     size_t totalSz = sizeof(*resp);
 
-    auto iter = db.find(cfid);
-    if (iter != db.end())
+    auto cf = db.openHandle(cfid);
+    if (cf != nullptr)
     {
-      auto& kvmap = iter->second;
-      // keys are ordered by higher seqnum to lower
-      auto it = kvmap.lower_bound(lookupKey);
-      MemKey endKey(0 , std::string(req->buf, req->size));
-      auto end_iter = kvmap.upper_bound(endKey);
-      for (; it != end_iter; it ++)
+      std::string value;
+      auto s = db.rocksdb_->Get(rocksdb::ReadOptions(), cf, lookupKey, &value);
+      if (s.ok()) 
       {
-        std::cout << "found value=" << it->second << " for key=" << lookupKey << std::endl;
+        std::cout << "found value=" << value << " for key=" << lookupKey << std::endl;
 
-        // CHECK IF key matches requested key
-        MemValue& val = it->second;
-
-        // TODO process ValueType = delete
-        totalSz += val.value.size();
+        totalSz += value.size();
         resp = (ReplLookupResponse*)malloc(totalSz);
-        resp->found = ((val.type != rocksdb::ValueType::kTypeDeletion) && (val.type != rocksdb::ValueType::kTypeColumnFamilyDeletion));
-        memcpy(resp->buf, val.value.data(), val.value.size());
-        resp->size = val.value.size();
+        resp->found = true;
+        memcpy(resp->value, value.data(), value.size());
+        resp->size = value.size();
         resp->status = Status::Code::kOk;
-        break;
       }
-      if (resp == nullptr)
+      else 
       {
         // key not found
         resp = (ReplLookupResponse*)malloc(totalSz);
         resp->found = false;
         resp->size = 0;
         resp->status = Status::Code::kOk;
-        std::cout << "iter not finding key=" << lookupKey << std::endl;
+        std::cout << "not finding key=" << lookupKey << std::endl;
       }
     } 
     else 
@@ -440,6 +392,12 @@ void scanWork()
 
 int main(int argc, char* argv[])
 {
+  bool newInstance = false;
+  if (argc > 1) {
+    newInstance = true;
+  }
+  db.init(newInstance);
+
   std::thread readThr = std::thread(readWork);
 
   int listenSocket, newSocket;
@@ -529,18 +487,6 @@ int main(int argc, char* argv[])
 
   close(listenSocket);
   close(newSocket);
-
-  std::cout << "Printing in-memory db" << std::endl;
-  for (auto kvmap : db.columnFamilies_)
-  {
-    for (auto elem : kvmap.second)
-    {
-      std::cout 
-        << "key=" << elem.first 
-        << ":value=" << elem.second 
-        << std::endl;
-    }
-  }
 
   return 0;
 }

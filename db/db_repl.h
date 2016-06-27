@@ -26,7 +26,7 @@ struct ReplThreadInfo {
 
   int socket = -1; // used to send WAL to offloader
   int readSocket = -1; // used to query offloader
-  int port = 0;
+  int port = -1;
   std::string addr;
 
   Status Get(const ReadOptions& options, 
@@ -40,6 +40,11 @@ struct ReplThreadInfo {
     const ReadOptions& read_options,
     const EnvOptions& soptions,
     MergeIteratorBuilder* merge_iter_builder);
+
+  bool IsReplicated() const
+  {
+    return (socket != -1);
+  }
 };
 
 
@@ -83,7 +88,7 @@ struct ReplLookupRequest
   size_t size;
   uint32_t cfid; // column family id
   SequenceNumber seq;
-  char buf[0];
+  char key[0];
 };
 
 struct ReplLookupResponse
@@ -92,7 +97,7 @@ struct ReplLookupResponse
   size_t size;
   bool found;
   Status::Code status; 
-  char buf[0];
+  char value[0];
 };
 
 typedef uint32_t CursorId;
