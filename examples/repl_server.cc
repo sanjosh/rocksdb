@@ -85,10 +85,18 @@ struct LocalCursor
   InMemKV::iterator iter;
 };
 
+static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
+
 struct InMemDB
 {
   CFMap columnFamilies_;
   std::map<int32_t, LocalCursor*> openCursors_;
+
+  InMemDB()
+  {
+    InMemKV kv;
+    columnFamilies_.insert(std::make_pair(kDefaultColumnFamilyIdx, kv));
+  }
 
   InMemKV& at(uint32_t column_family_id)
   {
@@ -131,7 +139,6 @@ struct InMemDB
   }
 };
 
-static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
 
 InMemDB db;
 
