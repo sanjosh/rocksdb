@@ -35,6 +35,31 @@ using rocksdb::ValueType;
 using rocksdb::SequenceNumber;
 using rocksdb::ColumnFamilyHandle;
 
+/**
+ * Store database GUID <-> last_seq, cf
+ *
+ * initial handshake protocol
+ *
+ * if (existing guid)
+ * {
+ *   verify cf list is same
+ *   send back last_seq to propagate from
+ * }
+ * else if rocksdb is initializing
+ * {
+ *   send back last_seq + cf_list
+ *   keep delta = my_seq - client_seq 
+ *   (during each wal update, set server_seq = client_seq + delta)
+ *   (other option is to reset seqnum on client)
+ * }
+ *
+ * Keep seqnumber with key or with cf/db ?
+ *
+ * Add custom comparator 
+ *
+ * Only apply ops greater than seqnum
+ */
+
 struct MemKey
 {
   std::string key;

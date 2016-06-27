@@ -52,19 +52,22 @@ struct ReplThreadInfo {
 // communication format between rocksdb and Offloader
 enum ReplRequestOp
 {
-  OP_LOOKUP = 1,
-  OP_CURSOR_OPEN = 2,
-  OP_CURSOR_NEXT = 3,
-  OP_CURSOR_CLOSE = 4,
-  OP_WAL = 5,
+  OP_INIT1 = 1,
+  OP_WAL = 101,
+  OP_LOOKUP = 201,
+  OP_CURSOR_OPEN = 202,
+  OP_CURSOR_NEXT = 203,
+  OP_CURSOR_CLOSE = 204,
 };
 
 enum ReplResponseOp
 {
-  RESP_LOOKUP = 1,
-  RESP_CURSOR_OPEN = 2,
-  RESP_CURSOR_NEXT = 3,
-  RESP_CURSOR_CLOSE = 4,
+  RESP_INIT1 = 1,
+  // add for wal?
+  RESP_LOOKUP = 201,
+  RESP_CURSOR_OPEN = 202,
+  RESP_CURSOR_NEXT = 203,
+  RESP_CURSOR_CLOSE = 204,
 };
 
 struct ReplRequestHeader
@@ -77,6 +80,23 @@ struct ReplResponseHeader
 {
   ReplResponseOp op;
   size_t size;
+};
+
+// send different message for new db or existing db
+struct ReplDatabaseInit
+{
+  SequenceNumber seq;
+  size_t identitySize;
+  char identity[0];
+  // TODO send list of column families
+};
+
+struct ReplDatabaseResp
+{
+  SequenceNumber seq;
+  size_t identitySize;
+  char identity[0];
+  // TODO send back list of column families
 };
 
 struct ReplLookupRequest
