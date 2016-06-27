@@ -22,8 +22,11 @@
 
 using rocksdb::WriteBatch;
 using rocksdb::ReplWALUpdate;
+using rocksdb::ReplRequestHeader;
+using rocksdb::ReplResponseHeader;
 using rocksdb::ReplLookupResponse;
 using rocksdb::ReplLookupRequest;
+using rocksdb::ReplRequestOp;
 using rocksdb::ReplCursorOpen;
 using rocksdb::ReplCursorOpenResponse;
 using rocksdb::Slice;
@@ -181,214 +184,107 @@ struct MapInserter : public WriteBatch::Handler {
   }
 };
 
-static constexpr size_t MaxReadSize = 8192;
 static constexpr int walPort = 8192;
-static constexpr int readPort = walPort + 1;
 
-
-void readWork()
+int processLookup(int sockfd, ReplLookupRequest* req, int extraSz)
 {
-  int listenSocket, newSocket;
-  struct sockaddr_in serverAddr;
-  struct sockaddr_storage serverStorage;
-  socklen_t addr_size;
+  std::string lookupKey(req->key, extraSz);
+  uint32_t cfid = req->cfid;
 
-  listenSocket = socket(PF_INET, SOCK_STREAM, 0);
-  
-  serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(readPort);
-  serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-  memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
+  std::cout 
+    << "read from ReadSocket size=" << extraSz
+    << ":cfid=" << cfid
+    << ":key=" << lookupKey
+    << ":db map size=" << db.handles_.size()
+    << ":seq=" << req->seq
+    << std::endl;
 
-  bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
+  ReplLookupResponse* resp = nullptr;
+  size_t totalSz = sizeof(*resp);
 
-  if(listen(listenSocket,5)==0)
-    printf("Listening on %d\n", readPort);
-  else {
-    printf("Error\n");
-    pthread_exit(0);
-  }
+  auto cf = db.openHandle(cfid);
 
-  addr_size = sizeof serverStorage;
-  newSocket = accept(listenSocket, 
-    (struct sockaddr *) &serverStorage, &addr_size);
+  int ret = 0;
 
-  char buf[MaxReadSize];
-  bool eof = false;
+  if (cf != nullptr)
+  {
+    std::string value;
+    auto s = db.rocksdb_->Get(rocksdb::ReadOptions(), cf, lookupKey, &value);
 
-  std::cout << "got new connection to handle reads" << std::endl;
-
-  while (!eof) {
-    bzero(buf, sizeof(buf));
-    const ssize_t readSz = read(newSocket, buf, sizeof(buf));
-    if (readSz <= 0) {
-      eof = true;
-    }
-
-
-    ReplLookupRequest* req = reinterpret_cast<ReplLookupRequest*>(buf);
-    std::string lookupKey(req->key, req->size);
-    uint32_t cfid = req->cfid;
-
-    std::cout 
-      << "read from ReadSocket size=" << readSz 
-      << ":cfid=" << cfid
-      << ":key=" << lookupKey
-      << ":db map size=" << db.handles_.size()
-      << ":seq=" << req->seq
-      << std::endl;
-
-    ReplLookupResponse* resp = nullptr;
-    size_t totalSz = sizeof(*resp);
-
-    auto cf = db.openHandle(cfid);
-    if (cf != nullptr)
+    if (s.ok()) 
     {
-      std::string value;
-      auto s = db.rocksdb_->Get(rocksdb::ReadOptions(), cf, lookupKey, &value);
-      if (s.ok()) 
-      {
-        std::cout << "found value=" << value << " for key=" << lookupKey << std::endl;
+      std::cout << "found value=" << value << " for key=" << lookupKey << std::endl;
 
-        totalSz += value.size();
-        resp = (ReplLookupResponse*)malloc(totalSz);
-        resp->found = true;
-        memcpy(resp->value, value.data(), value.size());
-        resp->size = value.size();
-        resp->status = Status::Code::kOk;
-      }
-      else 
-      {
-        // key not found
-        resp = (ReplLookupResponse*)malloc(totalSz);
-        resp->found = false;
-        resp->size = 0;
-        resp->status = Status::Code::kOk;
-        std::cout << "not finding key=" << lookupKey << std::endl;
-      }
-    } 
+      totalSz += value.size();
+      resp = (ReplLookupResponse*)malloc(totalSz);
+      resp->found = true;
+      memcpy(resp->value, value.data(), value.size());
+      resp->status = Status::Code::kOk;
+    }
     else 
     {
+      // key not found
       resp = (ReplLookupResponse*)malloc(totalSz);
-      resp->size = 0;
-      resp->status = Status::Code::kInvalidArgument;
-      std::cout << "not found cf=" << cfid << std::endl;
+      resp->found = false;
+      resp->status = Status::Code::kOk;
+      std::cout << "not finding key=" << lookupKey << std::endl;
     }
-
-    const ssize_t writeSz = write(newSocket, (const void*)resp, totalSz);
-    if (writeSz != totalSz) {
-      std::cout << "response failed in readWork" << std::endl;
-      eof = true;
-    }
+  } 
+  else 
+  {
+    resp = (ReplLookupResponse*)malloc(totalSz);
+    resp->status = Status::Code::kInvalidArgument;
+    std::cout << "not found cf=" << cfid << std::endl;
   }
 
-  close(newSocket);
-  close(listenSocket);
-}
+  ReplResponseHeader header;
+  header.op = rocksdb::ReplResponseOp::RESP_LOOKUP;
+  header.size = totalSz;
 
-/*
-void scanWork()
-{
-  int listenSocket, newSocket;
-  struct sockaddr_in serverAddr;
-  struct sockaddr_storage serverStorage;
-  socklen_t addr_size;
+  do {
+    ssize_t writeSz = 0;
 
-  listenSocket = socket(PF_INET, SOCK_STREAM, 0);
+    writeSz = write(sockfd, (const void*)&header, sizeof(header));
+    if (writeSz != sizeof(header)) {
+      std::cout << "response header failed " << writeSz << std::endl;
+      ret = -1;
+      break;
+    }
   
-  serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(readPort);
-  serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-  memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
-
-  bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
-
-  if(listen(listenSocket,5)==0)
-    printf("Listening on %d\n", readPort);
-  else {
-    printf("Error\n");
-    pthread_exit(0);
-  }
-
-  addr_size = sizeof serverStorage;
-  newSocket = accept(listenSocket, 
-    (struct sockaddr *) &serverStorage, &addr_size);
-
-  char buf[MaxReadSize];
-  bool eof = false;
-
-  std::cout << "got new connection to handle reads" << std::endl;
-
-  while (!eof) {
-
-    bzero(buf, sizeof(buf));
-    const ssize_t readSz = read(newSocket, buf, sizeof(buf));
-    if (readSz <= 0) {
-      eof = true;
-    }
-
-    ReplCursorOpen* req = reinterpret_cast<ReplCursorOpen*>(buf);
-    MemKey lookupKey(req->seq, std::string(req->buf, req->size));
-    uint32_t cfid = req->cfid;
-
-    std::cout 
-      << "read from ScanSocket size=" << readSz 
-      << ":cfid=" << cfid
-      << ":key=" << lookupKey.key
-      << ":db map size=" << db.size()
-      << ":seq=" << req->seq
-      << std::endl;
-
-    ReplCursorOpenResponse* resp = nullptr;
-    size_t totalSz = sizeof(*resp);
-
-    auto iter = db.find(cfid);
-    if (iter != db.end())
-    {
-      auto& kvmap = iter->second;
-      auto it = kvmap.lower_bound(lookupKey);
-      for (; it != kvmap.end() ; ++ it )
-      {
-        std::cout << "found value=" << it->second << " for key=" << lookupKey << std::endl;
-
-        // TODO process ValueType = delete
-        totalSz += val.value.size();
-        resp = (ReplCursorOpenResponse*)malloc(totalSz);
-        resp->found = ((val.type != rocksdb::ValueType::kTypeDeletion) && (val.type != rocksdb::ValueType::kTypeColumnFamilyDeletion));
-        memcpy(resp->buf, val.value.data(), val.value.size());
-        resp->size = val.value.size();
-        resp->status = Status::Code::kOk;
-        break;
-      }
-      if (resp == nullptr)
-      {
-        // key not found
-        resp = (ReplLookupResponse*)malloc(totalSz);
-        resp->found = false;
-        resp->size = 0;
-        resp->status = Status::Code::kOk;
-        std::cout << "iter not finding key=" << lookupKey << std::endl;
-      }
-    } 
-    else 
-    {
-      resp = (ReplLookupResponse*)malloc(totalSz);
-      resp->size = 0;
-      resp->status = Status::Code::kInvalidArgument;
-      std::cout << "not found cf=" << cfid << std::endl;
-    }
-
-    const ssize_t writeSz = write(newSocket, (const void*)resp, totalSz);
+    writeSz = write(sockfd, (const void*)resp, totalSz);
     if (writeSz != totalSz) {
-      std::cout << "response failed in readWork" << std::endl;
-      eof = true;
+      std::cout << "response header failed " << writeSz << std::endl;
+      ret = -1;
+      break;
     }
-  }
 
-  close(newSocket);
-  close(listenSocket);
+  } while (0);
+
+  free(resp);
+
+  return ret;
 }
-*/
+
+int processWAL(int sockfd, ReplWALUpdate* sw, size_t extraSz)
+{
+  int ret = 0;
+
+  rocksdb::WriteBatch batch;
+  rocksdb::Slice slice(sw->buf, extraSz);
+  // set contents of batch using Slice
+  rocksdb::WriteBatchInternal::SetContents(&batch, slice);
+
+  std::cout << "Got a WriteBatch"
+    << " seq=" << sw->seq
+    << ":size=" << batch.GetDataSize()
+    << ":num updates in batch=" << batch.Count()
+    << std::endl;
+
+  MapInserter handler(sw->seq, db);
+  batch.Iterate(&handler);
+
+  return 0;
+}
 
 int main(int argc, char* argv[])
 {
@@ -397,8 +293,6 @@ int main(int argc, char* argv[])
     newInstance = true;
   }
   db.init(newInstance);
-
-  std::thread readThr = std::thread(readWork);
 
   int listenSocket, newSocket;
   struct sockaddr_in serverAddr;
@@ -421,68 +315,57 @@ int main(int argc, char* argv[])
     exit(1);
   }
 
-  addr_size = sizeof serverStorage;
+  addr_size = sizeof (serverStorage);
   newSocket = accept(listenSocket, 
     (struct sockaddr *) &serverStorage, &addr_size);
 
-  char buf[MaxReadSize];
-  off_t processedOff = 0;
-  off_t readOff = 0;
   bool eof = false;
 
-  bzero(buf, sizeof(buf));
+  while (!eof) 
+  {
 
-  while (!eof) {
-
-    // read from socket until eof
-    ssize_t readSz = read(newSocket, buf + readOff, sizeof(buf));
-    if (readSz <= 0) {
+    ReplRequestHeader header;
+    ssize_t readSz = read(newSocket, &header, sizeof(header));
+    if (readSz != sizeof(header))
+    {
       eof = true;
-    } else {
-      readOff += readSz;
-    }
+      break;
+    } 
 
-    std::cout 
-      << "read from WriteSocket size=" << readSz 
-      << ":processedOff=" << processedOff 
-      << ":readOff=" << readOff 
-      << std::endl;
+    switch (header.op) 
+    {
+      case rocksdb::ReplRequestOp::OP_LOOKUP : 
+      {
 
-    // for now,
-    // assume multiple records are read from socket
-    // no record gets fragmented during read
-    while (processedOff < readOff) {
+        ReplLookupRequest* req = (ReplLookupRequest*)malloc(header.size);
+        readSz = read(newSocket, req, header.size);
+        if (readSz != header.size) 
+        {
+          eof = true;
+          break;
+        }
 
-      // assert that readOff - processedOff > value being read
-      ReplWALUpdate* sw
-        = (ReplWALUpdate*)(buf + processedOff);
+        int ret = processLookup(newSocket, req, header.size - sizeof(*req));
+        free(req);
+        if (ret != 0) break;
+      }
 
-      if (sw->size <= (readOff - processedOff - sizeof(ReplWALUpdate))) {
+      case rocksdb::ReplRequestOp::OP_WAL :
+      {
 
-        rocksdb::WriteBatch batch;
-        rocksdb::Slice slice(sw->buf, sw->size);
-        // set contents of batch using Slice
-        rocksdb::WriteBatchInternal::SetContents(&batch, slice);
-  
-        std::cout << "Got a WriteBatch"
-          << " seq=" << sw->seq
-          << ":size=" << batch.GetDataSize()
-          << ":num updates in batch=" << batch.Count()
-          << std::endl;
+        ReplWALUpdate* sw = (ReplWALUpdate*)malloc(header.size);
+        readSz = read(newSocket, sw, header.size);
+        if (readSz != header.size) 
+        {
+          eof = true;
+          break;
+        }
 
-        processedOff += sizeof(ReplWALUpdate) + sw->size;
-
-        MapInserter handler(sw->seq, db);
-        batch.Iterate(&handler);
-        
-      } else {
-        std::cout << "fragmented record read" << std::endl;
-        eof = true;
-        break;
+        int ret = processWAL(newSocket, sw, header.size - sizeof(*sw));
+        free(sw);
+        if (ret != 0) break;
       }
     }
-
-    readOff = processedOff = 0;
   }
 
   close(listenSocket);

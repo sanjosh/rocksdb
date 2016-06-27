@@ -14,8 +14,6 @@
 
 namespace rocksdb {
 
-static constexpr size_t MaxResponseSize = 8192;
-
 static int ConnectSocket(std::string& addr, int port, int& sock_fd)
 {
   sock_fd = socket(PF_INET, SOCK_STREAM, 0);
@@ -47,16 +45,14 @@ void DBImpl::ReplThreadBody(void* arg)
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
   int err = ConnectSocket(t->addr, t->port, t->socket);
-  int err2 = ConnectSocket(t->addr, t->port + 1, t->readSocket);
 
-  if ((err < 0) || (err2 < 0))
+  if (err < 0)
   {
     Log(InfoLogLevel::INFO_LEVEL, logger, 
-      "sockets could not start to %s:%d error=%d:%d",
+      "sockets could not start to %s:%d error=%d",
       t->addr.c_str(), 
       t->port,
-      err,
-      err2);
+      err);
 
     t->has_stopped.store(true, std::memory_order_release);
     Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
@@ -65,6 +61,9 @@ void DBImpl::ReplThreadBody(void* arg)
 
   std::unique_ptr<TransactionLogIterator> iter;
   SequenceNumber currentSeqNum = 0;
+
+  ReplRequestHeader header;
+  header.op = OP_WAL;
 
   while (!t->stop.load(std::memory_order_acquire)) {
       
@@ -94,7 +93,6 @@ void DBImpl::ReplThreadBody(void* arg)
       // TODO : combine into an operator new + ctor
       ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
       memcpy(sw->buf, batch.data(), batch.size());
-      sw->size = batch.size();
       sw->seq = res.sequence;
 
       // When you commit a WriteBatch at seq=M with (say) 3 upd
@@ -106,23 +104,37 @@ void DBImpl::ReplThreadBody(void* arg)
       // giving back the update that actually has seq=M
       currentSeqNum = res.sequence + res.writeBatchPtr->Count() - 1;
 
-      const ssize_t writeSz = write(t->socket, (const void*)sw, totalSz);
-      const int capture_errno = errno;
+      {
+        std::unique_lock<std::mutex> l(t->sock_mutex);
 
-      if (writeSz != totalSz) {
-        Log(InfoLogLevel::ERROR_LEVEL, logger, 
-          "write failed sz=%ld expected=%ld errno=%d", 
-          writeSz, 
-          totalSz,
-          capture_errno
-        );
+        header.size = totalSz;
+
+        ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
+
+        if (writeSz != sizeof(header)) {
+          Log(InfoLogLevel::ERROR_LEVEL, logger, 
+            "write failed sz=%ld expected=%ld errno=%d", 
+            writeSz, 
+            sizeof(header),
+            errno);
+          break;
+        }
+
+        writeSz = write(t->socket, (const void*)sw, totalSz);
+
+        if (writeSz != totalSz) {
+          Log(InfoLogLevel::ERROR_LEVEL, logger, 
+            "write failed sz=%ld expected=%ld errno=%d", 
+            writeSz, 
+            totalSz,
+            errno);
+        }
       }
-      
+
       free(sw);
 
       Log(InfoLogLevel::INFO_LEVEL, logger, 
-        "Repl thread sent %ld seq=%llu actual batch=%lu numUpd=%d ", 
-        writeSz,
+        "Repl thread sent seq=%llu actual batch=%lu numUpd=%d ", 
         res.sequence,
         batch.size(),
         res.writeBatchPtr->Count()
@@ -145,43 +157,62 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
   ReplThreadInfo* t = this;
   auto& logger = info_log;
 
+  ReplRequestHeader header;
+  header.op = OP_LOOKUP;
+
+  ReplResponseHeader respHeader;
+
   do {
+
+    std::unique_lock<std::mutex> l(sock_mutex);
+
     const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();
 
+    header.size = totalSz;
+    ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
+    if (writeSz != (ssize_t)header.size) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header write failed");
+      status = Status::IOError("Repl header write failed");
+      break;
+    }
+
     ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
-    lreq->size = key.size();
     lreq->cfid = column_family->GetID();
-    memcpy(lreq->key, key.data(), lreq->size);
+    memcpy(lreq->key, key.data(), key.size());
     lreq->seq = seq;
 
-    const ssize_t writeSz = write(t->readSocket, (const void*)lreq, totalSz);
-
+    writeSz = write(t->socket, (const void*)lreq, totalSz);
     free((void*)lreq);
 
     if (writeSz != totalSz) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl socket write failed");
-      status = Status::IOError("Repl socket write failed");
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data write failed");
+      status = Status::IOError("Repl data write failed");
       break;
     }
 
-    char response[MaxResponseSize]; // max response size?
+    ssize_t readSz = read(t->socket, (void*)&respHeader, sizeof(respHeader));
 
-    const ssize_t readSz = read(t->readSocket, (void*)response, totalSz);
-
-    if (readSz < (ssize_t)sizeof(ReplLookupResponse)) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl socket read failed");
-      status = Status::IOError("Repl socket read failed");
+    if (readSz != sizeof(respHeader)) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
+      status = Status::IOError("Repl header read failed");
       break;
     }
 
-    ReplLookupResponse *lresp = reinterpret_cast<ReplLookupResponse*>(response);
+    ReplLookupResponse* lresp = (ReplLookupResponse*) malloc(respHeader.size);
+    readSz = read(t->socket, (void*)lresp, respHeader.size);
+
+    if (readSz != (ssize_t)respHeader.size) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
+      status = Status::IOError("Repl data read failed");
+      break;
+    }
 
     if (lresp->found) {
       if (value_found) {
         *value_found = lresp->found; 
       }
       if (value) {
-        value->assign(lresp->value, lresp->size);
+        value->assign(lresp->value, respHeader.size);
       }
       status = Status::OK();
     } else {
@@ -207,8 +238,8 @@ public:
 
   ~ReplIterator() 
   {
-    ReplCursorClose op;
-    op.cursor_id = 0;
+    //ReplCursorClose op;
+    //op.cursor_id = 0;
   }
 
   virtual bool Valid() const override 
@@ -218,6 +249,7 @@ public:
 
   virtual void SeekInternal(ReplCursorOpen* oc) 
   {
+    /*
     ReplThreadInfo* t = &repl_thread_info_;
 
     do {
@@ -243,6 +275,7 @@ public:
       }
 
     } while (0);
+    */
 
     delete oc;
   }
@@ -252,7 +285,6 @@ public:
     ReplCursorOpen* oc = new (k.size()) ReplCursorOpen();
     oc->cfid = cfid_;
     oc->seq = seqnum_;
-    oc->size = k.size();
     memcpy(oc->buf, k.data(), k.size());
 
     SeekInternal(oc);
@@ -262,7 +294,6 @@ public:
     ReplCursorOpen* oc = new ReplCursorOpen();
     oc->cfid = cfid_;
     oc->seq = seqnum_;
-    oc->size = 0;
     oc->seekFirst = true;
 
     SeekInternal(oc);
@@ -272,13 +303,13 @@ public:
     ReplCursorOpen* oc = new ReplCursorOpen();
     oc->cfid = cfid_;
     oc->seq = seqnum_;
-    oc->size = 0;
     oc->seekLast = true;
 
     SeekInternal(oc);
   }
   virtual void Next() override 
   {
+    /*
     ReplCursorNext next;
     next.cursor_id = remote_cursor_id_;
 
@@ -318,6 +349,7 @@ public:
         }
       }
     } while (0);
+    */
   }
   virtual void Prev() override 
   {
