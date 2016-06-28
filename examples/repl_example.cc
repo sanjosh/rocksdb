@@ -16,7 +16,7 @@ using namespace rocksdb;
 
 std::string kDBPath = "/tmp/rocksdb_repl_example";
 
-static constexpr size_t NumKeys = 5;
+static constexpr size_t NumKeys = 500000;
 
 static void waitForUser()
 {
@@ -45,7 +45,7 @@ int main() {
   for (int i = 0; i < NumKeys; i++) 
   {
     std::string key = "key_" + std::to_string(i);
-    std::string value = "value_" + std::to_string(10 + i);
+    std::string value(4096, 'a');
     s = db->Put(WriteOptions(), key, value);
     assert(s.ok());
   }

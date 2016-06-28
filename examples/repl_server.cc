@@ -9,6 +9,8 @@
 #include <thread> 
 #include <map> // inmemory map
 #include <string> // key value
+#include <thread>
+#include <future>
 
 #include <rocksdb/db.h>
 #include "rocksdb/types.h" // SequenceNumber
@@ -92,7 +94,7 @@ struct MemKeyCompare
 
 
 static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
-static std::string kDBPath = "/tmp/repl_server";
+static std::string kDBPath = "/tmp/rocksdb_repl_server";
 
 struct DBWrapper {
 
@@ -312,6 +314,8 @@ int processWAL(int sockfd, ReplWALUpdate* req, size_t extraSz)
   MapInserter handler(req->seq, db);
   batch.Iterate(&handler);
 
+  db.seq_ = req->seq;
+
   return ret;
 }
 
@@ -460,6 +464,110 @@ int processInit(int sockfd, ReplDatabaseInit* req, size_t extraSz)
   return ret;
 }
 
+void serverWorker(int sockfd)
+{
+  bool eof = false;
+
+  while (!eof) 
+  {
+    ReplRequestHeader header;
+    ssize_t readSz = read(sockfd, &header, sizeof(header));
+    if (readSz != sizeof(header))
+    {
+      eof = true;
+      std::cout << __LINE__ << "got eof" << std::endl;
+      break;
+    } 
+
+    switch (header.op) 
+    {
+      case rocksdb::ReplRequestOp::OP_INIT1 : 
+      {
+        ReplDatabaseInit* req = (ReplDatabaseInit*)malloc(header.size);
+        readSz = read(sockfd, req, header.size);
+        if (readSz != header.size) 
+        {
+          eof = true;
+          std::cout << __LINE__ 
+            << "got sz="  << readSz 
+            << " expected=" << header.size 
+            << std::endl;
+          break;
+        }
+
+        int ret = processInit(sockfd, req, header.size - sizeof(*req));
+        free(req);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got handshake error" << std::endl;
+          break;
+        }
+        break;
+      }
+      case rocksdb::ReplRequestOp::OP_LOOKUP : 
+      {
+
+        ReplLookupRequest* req = (ReplLookupRequest*)malloc(header.size);
+        readSz = read(sockfd, req, header.size);
+        if (readSz != header.size) 
+        {
+          eof = true;
+          std::cout << __LINE__ 
+            << "got sz="  << readSz 
+            << " expected=" << header.size 
+            << std::endl;
+          break;
+        }
+
+        int ret = processLookup(sockfd, req, header.size - sizeof(*req));
+        free(req);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
+          break;
+        }
+        break;
+      }
+
+      case rocksdb::ReplRequestOp::OP_WAL :
+      {
+
+        ReplWALUpdate* sw = (ReplWALUpdate*)malloc(header.size);
+        readSz = read(sockfd, sw, header.size);
+        if (readSz != header.size) 
+        {
+          eof = true;
+          std::cout << __LINE__ 
+            << "got sz="  << readSz 
+            << " expected=" << header.size 
+            << std::endl;
+          break;
+        }
+
+        int ret = processWAL(sockfd, sw, header.size - sizeof(*sw));
+        free(sw);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
+          break;
+        }
+        break;
+      }
+
+      default:
+      {
+        std::cout << " UKNOWN error" << std::endl;
+        eof = true;
+      }
+    }
+  }
+
+  close(sockfd);
+}
+
 int main(int argc, char* argv[])
 {
   bool newInstance = false;
@@ -490,111 +598,17 @@ int main(int argc, char* argv[])
   }
 
   addr_size = sizeof (serverStorage);
-  newSocket = accept(listenSocket, 
-    (struct sockaddr *) &serverStorage, &addr_size);
 
-  bool eof = false;
+  while (1) {
 
-  while (!eof) 
-  {
-
-    ReplRequestHeader header;
-    ssize_t readSz = read(newSocket, &header, sizeof(header));
-    if (readSz != sizeof(header))
-    {
-      eof = true;
-      std::cout << __LINE__ << "got eof" << std::endl;
-      break;
-    } 
-
-    switch (header.op) 
-    {
-      case rocksdb::ReplRequestOp::OP_INIT1 : 
-      {
-        ReplDatabaseInit* req = (ReplDatabaseInit*)malloc(header.size);
-        readSz = read(newSocket, req, header.size);
-        if (readSz != header.size) 
-        {
-          eof = true;
-          std::cout << __LINE__ 
-            << "got sz="  << readSz 
-            << " expected=" << header.size 
-            << std::endl;
-          break;
-        }
-
-        int ret = processInit(newSocket, req, header.size - sizeof(*req));
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got handshake error" << std::endl;
-          break;
-        }
-        break;
-      }
-      case rocksdb::ReplRequestOp::OP_LOOKUP : 
-      {
-
-        ReplLookupRequest* req = (ReplLookupRequest*)malloc(header.size);
-        readSz = read(newSocket, req, header.size);
-        if (readSz != header.size) 
-        {
-          eof = true;
-          std::cout << __LINE__ 
-            << "got sz="  << readSz 
-            << " expected=" << header.size 
-            << std::endl;
-          break;
-        }
-
-        int ret = processLookup(newSocket, req, header.size - sizeof(*req));
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got lookup error" << std::endl;
-          break;
-        }
-        break;
-      }
-
-      case rocksdb::ReplRequestOp::OP_WAL :
-      {
-
-        ReplWALUpdate* sw = (ReplWALUpdate*)malloc(header.size);
-        readSz = read(newSocket, sw, header.size);
-        if (readSz != header.size) 
-        {
-          eof = true;
-          std::cout << __LINE__ 
-            << "got sz="  << readSz 
-            << " expected=" << header.size 
-            << std::endl;
-          break;
-        }
-
-        int ret = processWAL(newSocket, sw, header.size - sizeof(*sw));
-        free(sw);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got lookup error" << std::endl;
-          break;
-        }
-        break;
-      }
-
-      default:
-      {
-        std::cout << " UKNOWN error" << std::endl;
-        eof = true;
-      }
-    }
+    newSocket = accept(listenSocket, 
+      (struct sockaddr *) &serverStorage, &addr_size);
+  
+    auto fut = std::async(std::launch::async,
+      serverWorker, newSocket);
   }
 
   close(listenSocket);
-  close(newSocket);
 
   return 0;
 }

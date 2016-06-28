@@ -1502,6 +1502,15 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
 Status DBImpl::FlushMemTableToOutputFile(
     ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
     bool* made_progress, JobContext* job_context, LogBuffer* log_buffer) {
+
+  // Do not flush if db is replicated
+  if (repl_thread_info_.IsReplicated()) {
+    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
+        "skipping flush for replicated db");
+    Status s;
+    return s;
+  }
+
   mutex_.AssertHeld();
   assert(cfd->imm()->NumNotFlushed() != 0);
   assert(cfd->imm()->IsFlushPending());
