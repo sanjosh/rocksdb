@@ -57,8 +57,11 @@ int ReplThreadInfo::initialize(const std::string& guid,
       break;
     }
 
+    ssize_t totalSz = sizeof(ReplDatabaseInit) + guid.size();
+
     ReplRequestHeader header;
     header.op = OP_INIT1;
+    header.size = totalSz;
 
     ssize_t writeSz = write(socket, (const void*)&header, sizeof(header));
 
@@ -72,7 +75,6 @@ int ReplThreadInfo::initialize(const std::string& guid,
       break;
     }
 
-    ssize_t totalSz = sizeof(ReplDatabaseInit) + guid.size();
     ReplDatabaseInit* initReq = (ReplDatabaseInit*)malloc(totalSz);
 
     initReq->seq = lastSequence;

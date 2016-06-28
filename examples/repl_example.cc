@@ -45,6 +45,7 @@ int main() {
     usleep(100); // delayed write
   }
 
+  /*
   for (int i = 0; i < NumKeys; i++) 
   {
     std::string returnValue;
@@ -78,7 +79,9 @@ int main() {
       << ":value=" << returnValue
       << std::endl;
   }
+  */
 
+  getchar();
   usleep(10000);
 
   delete db;

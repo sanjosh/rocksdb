@@ -99,7 +99,7 @@ struct DBWrapper {
   std::map<uint32_t, rocksdb::ColumnFamilyHandle*> handles_;
   rocksdb::DB* rocksdb_{nullptr};
   SequenceNumber seq_{0}; // until which upstream rocksdb is synced
-  std::string identity; // guid of upstream rocksdb instance
+  std::string identity_; // guid of upstream rocksdb instance
 
   void init(bool newInstance)
   {
@@ -329,6 +329,7 @@ int processWAL(int sockfd, ReplWALUpdate* req, size_t extraSz)
  *    offloader.seq = rocksdb.seq = 0
  *
  * 3. old rocksdb   <-> old offloader
+ *    if guid mismatch error
  *    offloader.guid is non-null and equal rocksdb.guid
  *    offloader.seq < rocksdb.seq and exists rocksdb wal < offloader.seq
  *       offloader sends back seq from which to transmit
@@ -342,19 +343,94 @@ int processInit(int sockfd, ReplDatabaseInit* req, size_t extraSz)
 {
   int ret = 0;
 
-  SequenceNumber remote = req->seq;
+  std::string remoteIdentity(req->identity, req->identitySize);
 
-  if (db.seq_ > req->seq)
+  const bool IsNewOffloader = ((db.identity_.size() == 0) && (db.seq_ == 0));
+  // TODO Pass exact state from client instead of deriving the situation here
+  const bool IsNewRocksDB = (req->seq == 0);
+  const bool IsDifferent = (db.identity_ != remoteIdentity);
+
+  SequenceNumber responseSeq{0};
+  std::string responseIdentity;
+  int32_t responseCode = -1;
+
+  std::cout << "handshake got seq=" << req->seq
+    << ":identity=" << remoteIdentity
+    << std::endl;
+
+  std::string caseString;
+
+  if (IsNewRocksDB)
   {
-    // new rocksdb was initialized
+    assert(remoteIdentity.size());
+
+    if (IsNewOffloader)
+    {
+      // CASE : fresh rocksdb connecting to fresh offloader
+      assert(db.seq_ == 0);
+      assert(req->seq == 0);
+      db.identity_ = remoteIdentity;
+      caseString = "fresh->fresh";
+      responseCode = 0;
+    }
+    else 
+    {
+      assert(IsDifferent);
+      // CASE : fresh rocksdb connecting to old offloader
+      // guids are different
+      // TODO : maintain delta if we start storing seq with keys on offloader
+      db.seq_ = req->seq;
+      responseSeq = req->seq;
+      responseCode = 0;
+      caseString = "fresh->old";
+      // send back zero seq num and our identity
+      // which rocksdb updates in its DBImpl
+    }
   }
   else 
   {
-    // offloader is behind rocksdb
+    if (IsNewOffloader) 
+    {
+      // CASE : old rocksdb connecting to fresh offloader
+      // error
+      caseString = "old->fresh";
+    }
+    else 
+    {
+      assert (db.seq_ != 0);
+      assert (req->seq != 0);
+      if (db.seq_ <= req->seq) 
+      {
+        // CASE : old rocksdb re-connecting to old offloader
+        responseSeq = db.seq_;
+        db.identity_ = remoteIdentity;
+        responseCode = 0;
+        caseString = "old->old";
+      } 
+      else
+      {
+       // CASE : rocksdb has deleted logs which offloader needs!
+       // error
+        caseString = "very_old->fresh";
+      }
+    }
   }
 
-  ReplLookupResponse* resp = nullptr;
-  size_t totalSz = sizeof(*resp);
+  responseIdentity = db.identity_;
+
+  std::cout << "handshake sending seq=" << responseSeq
+    << ":identity=" << responseIdentity
+    << ":code=" << responseCode
+    << ":case=" << caseString
+    << std::endl;
+
+  ReplDatabaseResp* resp = nullptr;
+  size_t totalSz = sizeof(*resp) + responseIdentity.size();
+  resp = (ReplDatabaseResp*)malloc(totalSz);
+  resp->identitySize = responseIdentity.size();
+  resp->seq = responseSeq;
+  memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
+
 
   ReplResponseHeader header;
   header.op = rocksdb::ReplResponseOp::RESP_INIT1;
@@ -427,6 +503,7 @@ int main(int argc, char* argv[])
     if (readSz != sizeof(header))
     {
       eof = true;
+      std::cout << __LINE__ << "got eof" << std::endl;
       break;
     } 
 
@@ -439,12 +516,17 @@ int main(int argc, char* argv[])
         if (readSz != header.size) 
         {
           eof = true;
+          std::cout << __LINE__ << "got eof" << std::endl;
           break;
         }
 
         int ret = processInit(newSocket, req, header.size - sizeof(*req));
         free(req);
-        if (ret != 0) break;
+        if (ret != 0) 
+        {
+          std::cout << "got handshake error" << std::endl;
+          break;
+        }
       }
       case rocksdb::ReplRequestOp::OP_LOOKUP : 
       {
@@ -454,12 +536,16 @@ int main(int argc, char* argv[])
         if (readSz != header.size) 
         {
           eof = true;
+          std::cout << __LINE__ << "got eof" << std::endl;
           break;
         }
 
         int ret = processLookup(newSocket, req, header.size - sizeof(*req));
         free(req);
-        if (ret != 0) break;
+        if (ret != 0) 
+        {
+          break;
+        }
       }
 
       case rocksdb::ReplRequestOp::OP_WAL :
@@ -476,6 +562,12 @@ int main(int argc, char* argv[])
         int ret = processWAL(newSocket, sw, header.size - sizeof(*sw));
         free(sw);
         if (ret != 0) break;
+      }
+
+      default:
+      {
+        std::cout << " UKNOWN error" << std::endl;
+        eof = true;
       }
     }
   }
