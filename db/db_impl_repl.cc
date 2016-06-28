@@ -37,6 +37,57 @@ static int ConnectSocket(std::string& addr, int port, int& sock_fd)
   return err;
 }
 
+class ReplSocket
+{
+  int writeSocket(int sockfd, ReplRequestOp op, 
+    const void* data, const size_t totalSz)
+  {
+
+    int err = 0;
+
+    do {
+
+      ReplRequestHeader header;
+      header.op = op;
+      header.size = totalSz;
+
+      ssize_t writeSz = 0;
+
+      writeSz = write(socket, (const void*)&header, sizeof(header));
+
+      if (writeSz != sizeof(header)) {
+        err = -errno;
+        Log(InfoLogLevel::ERROR_LEVEL, logger, 
+          "write failed sz=%ld expected=%ld errno=%d", 
+          writeSz, 
+          sizeof(header),
+          errno);
+        break;
+      }
+
+      writeSz = write(socket, (const void*)data, totalSz);
+
+      if (writeSz != totalSz) {
+        err = -errno;
+        Log(InfoLogLevel::ERROR_LEVEL, logger, 
+          "write failed sz=%ld expected=%ld errno=%d", 
+          writeSz, 
+          totalSz,
+          errno);
+        break;
+      }
+
+    } while (0);
+
+    return err;
+  }
+
+  int readSocket(int sockfd, ReplResponseOp op, 
+    const void* data, const size_t size)
+  {
+  }
+};
+
 int ReplThreadInfo::initialize(const std::string& guid,
     SequenceNumber lastSequence)
 {
@@ -324,42 +375,58 @@ public:
     return valid_;
   }
 
-  virtual void SeekInternal(ReplCursorOpen* oc) 
+  virtual void SeekInternal(ReplCursorOpenReq* oc) 
   {
-    /*
     ReplThreadInfo* t = &repl_thread_info_;
 
-    do {
-      const ssize_t totalSz = sizeof(ReplCursorOpen) + oc->size;
+    const ssize_t totalSz = sizeof(ReplCursorOpenReq) + oc->size;
+    ReplRequestHeader header;
+    header.op = ReplRequestOp::OP_INIT1;
+    header.size = totalSz;
 
-      const ssize_t writeSz = write(t->readSocket, (const void*)oc, totalSz);
-      if (writeSz != totalSz)
+    int ret = 0;
+
+    do {
+      ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
+      if (writeSz != sizeof(header)) 
       {
+        ret = -errno; 
         break;
       }
 
-      ReplCursorOpenResponse resp;
-      const ssize_t readSz = read(t->readSocket, (void*)&resp, sizeof(resp));
+      writeSz = write(t->readSocket, (const void*)oc, totalSz);
+      if (writeSz != totalSz)
+      {
+        ret = -errno;
+        break;
+      }
+
+      ReplResponseHeader respHeader;
+      ssize_t readSz = read(t->socket, (void*)&respHeader, sizeof(respHeader));
       if (readSz != sizeof(resp))
       {
+        ret = -errno;
         break;
       }
         
-      if (resp.status == Status::Code::kOk)
+      ReplCursorOpenResp* resp = (ReplCursorOpenResp*)malloc(respHeader.size);
+      readSz = read(t->socket, (void*)&resp, respHeader.size);
+      if (readSz != respHeader.size) 
       {
-        remote_cursor_id_ = resp.cursor_id;
-        valid_ = true;
+        ret = -errno;
+        break;
       }
 
-    } while (0);
-    */
+      // success
 
-    delete oc;
+    } while (0);
+
+    return ret;
   }
 
   virtual void Seek(const Slice& k) override 
   {
-    ReplCursorOpen* oc = new (k.size()) ReplCursorOpen();
+    ReplCursorOpenReq* oc = malloc(sizeof(ReplCursorOpenReq)) + k.size();
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     memcpy(oc->buf, k.data(), k.size());
@@ -368,7 +435,7 @@ public:
   }
   virtual void SeekToFirst() override 
   {
-    ReplCursorOpen* oc = new ReplCursorOpen();
+    ReplCursorOpenReq* oc = malloc(sizeof(ReplCursorOpenReq)) + k.size();
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = true;
@@ -377,7 +444,7 @@ public:
   }
   virtual void SeekToLast() override 
   {
-    ReplCursorOpen* oc = new ReplCursorOpen();
+    ReplCursorOpenReq* oc = malloc(sizeof(ReplCursorOpenReq)) + k.size();
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekLast = true;

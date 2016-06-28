@@ -56,26 +56,31 @@ struct ReplThreadInfo {
 };
 
 
+
+#define RESP_BEGIN 1000
 // communication format between rocksdb and Offloader
 enum ReplRequestOp
 {
   OP_INIT1 = 1,
+
   OP_WAL = 101,
+
   OP_LOOKUP = 201,
+
   OP_CURSOR_OPEN = 202,
   OP_CURSOR_NEXT = 203,
   OP_CURSOR_CLOSE = 204,
+
+  RESP_INIT1 = RESP_BEGIN + OP_INIT1,
+  // add for wal?
+  RESP_LOOKUP = RESP_BEGIN + OP_LOOKUP,
+
+  RESP_CURSOR_OPEN = RESP_BEGIN + OP_CURSOR_OPEN,
+  RESP_CURSOR_NEXT = RESP_BEGIN + OP_CURSOR_NEXT,
+  RESP_CURSOR_CLOSE = RESP_BEGIN + OP_CURSOR_CLOSE,
 };
 
-enum ReplResponseOp
-{
-  RESP_INIT1 = 1,
-  // add for wal?
-  RESP_LOOKUP = 201,
-  RESP_CURSOR_OPEN = 202,
-  RESP_CURSOR_NEXT = 203,
-  RESP_CURSOR_CLOSE = 204,
-};
+typedef ReplRequestOp ReplResponseOp;
 
 struct ReplRequestHeader
 {
@@ -83,11 +88,7 @@ struct ReplRequestHeader
   size_t size;
 };
 
-struct ReplResponseHeader
-{
-  ReplResponseOp op;
-  size_t size;
-};
+typedef ReplRequestHeader ReplResponseHeader;
 
 // send different message for new db or existing db
 struct ReplDatabaseInit
@@ -128,7 +129,7 @@ struct ReplWALUpdate
 
 typedef uint32_t CursorId;
 
-struct ReplCursorOpen
+struct ReplCursorOpenReq
 {
   uint32_t cfid;
   SequenceNumber seq;
@@ -147,18 +148,18 @@ struct ReplCursorOpen
   }
 };
 
-struct ReplCursorOpenResponse
+struct ReplCursorOpenResp
 {
   CursorId cursor_id;  
   Status::Code status;
 };
 
-struct ReplCursorNext
+struct ReplCursorNextReq
 {
   CursorId cursor_id;
 };
 
-struct ReplCursorNextResponse
+struct ReplCursorNextResp
 {
   CursorId cursor_id;
   Status::Code status;
@@ -166,12 +167,12 @@ struct ReplCursorNextResponse
   char buf[0]; // has <key, seq, type, value> 
 };
 
-struct ReplCursorClose
+struct ReplCursorCloseReq
 {
   CursorId cursor_id;
 };
 
-struct ReplCursorCloseResponse
+struct ReplCursorCloseResp
 {
   CursorId cursor_id;
   Status::Code status;

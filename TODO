@@ -1,0 +1,5 @@
+
+1. retain seqnum with key on repl_server
+2. support iterators
+3. wait for wal seqnum before responding to get
+4. create CF & delete CF support
