@@ -31,36 +31,106 @@ static int ConnectSocket(std::string& addr, int port, int& sock_fd)
   if (err < 0) 
   {
     close(sock_fd);
+    sock_fd = -1;
     return errno;
   }
+  return err;
+}
+
+int ReplThreadInfo::initialize(const std::string& guid,
+    SequenceNumber lastSequence)
+{
+  auto& logger = info_log;
+
+  int err = 0;
+  do {
+
+    err = ConnectSocket(addr, port, socket);
+
+    if (err < 0)
+    {
+      Log(InfoLogLevel::INFO_LEVEL, logger, 
+        "sockets could not start to %s:%d error=%d",
+        addr.c_str(), 
+        port,
+        err);
+      break;
+    }
+
+    ReplRequestHeader header;
+    header.op = OP_INIT1;
+
+    ssize_t writeSz = write(socket, (const void*)&header, sizeof(header));
+
+    if (writeSz != sizeof(header)) {
+      err = -errno;
+      Log(InfoLogLevel::ERROR_LEVEL, logger, 
+        "write failed sz=%ld expected=%ld errno=%d", 
+        writeSz, 
+        sizeof(header),
+        errno);
+      break;
+    }
+
+    ssize_t totalSz = sizeof(ReplDatabaseInit) + guid.size();
+    ReplDatabaseInit* initReq = (ReplDatabaseInit*)malloc(totalSz);
+
+    initReq->seq = lastSequence;
+    initReq->identitySize = guid.size();
+    memcpy(initReq->identity, guid.data(), guid.size());
+
+    writeSz = write(socket, (const void*)initReq, totalSz);
+
+    if (writeSz != totalSz) {
+      err = -errno;
+      Log(InfoLogLevel::ERROR_LEVEL, logger, 
+        "write failed sz=%ld expected=%ld errno=%d", 
+        writeSz, 
+        totalSz,
+        errno);
+      break;
+    }
+
+    // read resp
+    ReplResponseHeader respHeader;
+    ssize_t readSz = read(socket, (void*)&respHeader, sizeof(respHeader));
+
+    if (readSz != sizeof(respHeader)) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
+      err = -errno;
+      break;
+    }
+
+    ReplDatabaseResp* lresp = (ReplDatabaseResp*) malloc(respHeader.size);
+    readSz = read(socket, (void*)lresp, respHeader.size);
+
+    if (readSz != (ssize_t)respHeader.size) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
+      err = -errno;
+      break;
+    }
+
+    Log(InfoLogLevel::INFO_LEVEL, logger, 
+      "rocksdb seq=%llu server seq=%llu",
+      lastSequence, lresp->seq);
+
+    lastReplSequence = lresp->seq;
+
+  } while (0);
+
   return err;
 }
 
 void DBImpl::ReplThreadBody(void* arg)
 {
   ReplThreadInfo* t = reinterpret_cast<ReplThreadInfo*>(arg);
-  t->started.store(true, std::memory_order_release);
 
   auto& logger = t->info_log;
+
+  t->started.store(true, std::memory_order_release);
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
-  int err = ConnectSocket(t->addr, t->port, t->socket);
-
-  if (err < 0)
-  {
-    Log(InfoLogLevel::INFO_LEVEL, logger, 
-      "sockets could not start to %s:%d error=%d",
-      t->addr.c_str(), 
-      t->port,
-      err);
-
-    t->has_stopped.store(true, std::memory_order_release);
-    Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
-    return;
-  }
-
   std::unique_ptr<TransactionLogIterator> iter;
-  SequenceNumber currentSeqNum = 0;
 
   ReplRequestHeader header;
   header.op = OP_WAL;
@@ -70,9 +140,9 @@ void DBImpl::ReplThreadBody(void* arg)
     iter.reset();
     Log(InfoLogLevel::INFO_LEVEL, logger, 
       "Repl thread asking for logs from seq=%llu",
-      currentSeqNum + 1);
+      t->lastReplSequence + 1);
         
-    while (!t->db->GetUpdatesSince(currentSeqNum + 1, &iter).ok()) {
+    while (!t->db->GetUpdatesSince(t->lastReplSequence + 1, &iter).ok()) {
       if (!t->stop.load(std::memory_order_acquire)) {
         break;
       }
@@ -102,7 +172,7 @@ void DBImpl::ReplThreadBody(void* arg)
       // GetUpdatesSince() will return the update with seq=M even 
       // though it is less than what you asked, because it is 
       // giving back the update that actually has seq=M
-      currentSeqNum = res.sequence + res.writeBatchPtr->Count() - 1;
+      t->lastReplSequence = res.sequence + res.writeBatchPtr->Count() - 1;
 
       {
         std::unique_lock<std::mutex> l(t->sock_mutex);

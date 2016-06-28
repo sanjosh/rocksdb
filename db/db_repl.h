@@ -30,6 +30,11 @@ struct ReplThreadInfo {
   int port = -1;
   std::string addr;
 
+  SequenceNumber lastReplSequence;
+
+  int initialize(const std::string& guid,
+      SequenceNumber lastSequence);
+
   Status Get(const ReadOptions& options, 
     ColumnFamilyHandle* column_family,
     const Slice& key, 

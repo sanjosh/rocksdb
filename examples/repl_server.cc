@@ -24,6 +24,8 @@ using rocksdb::WriteBatch;
 using rocksdb::ReplWALUpdate;
 using rocksdb::ReplRequestHeader;
 using rocksdb::ReplResponseHeader;
+using rocksdb::ReplDatabaseInit;
+using rocksdb::ReplDatabaseResp;
 using rocksdb::ReplLookupResponse;
 using rocksdb::ReplLookupRequest;
 using rocksdb::ReplRequestOp;
@@ -95,7 +97,9 @@ static std::string kDBPath = "/tmp/repl_server";
 struct DBWrapper {
 
   std::map<uint32_t, rocksdb::ColumnFamilyHandle*> handles_;
-  rocksdb::DB* rocksdb_;
+  rocksdb::DB* rocksdb_{nullptr};
+  SequenceNumber seq_{0}; // until which upstream rocksdb is synced
+  std::string identity; // guid of upstream rocksdb instance
 
   void init(bool newInstance)
   {
@@ -290,25 +294,94 @@ int processLookup(int sockfd, ReplLookupRequest* req, int extraSz)
   return ret;
 }
 
-int processWAL(int sockfd, ReplWALUpdate* sw, size_t extraSz)
+int processWAL(int sockfd, ReplWALUpdate* req, size_t extraSz)
 {
   int ret = 0;
 
   rocksdb::WriteBatch batch;
-  rocksdb::Slice slice(sw->buf, extraSz);
+  rocksdb::Slice slice(req->buf, extraSz);
   // set contents of batch using Slice
   rocksdb::WriteBatchInternal::SetContents(&batch, slice);
 
   std::cout << "Got a WriteBatch"
-    << " seq=" << sw->seq
+    << " seq=" << req->seq
     << ":size=" << batch.GetDataSize()
     << ":num updates in batch=" << batch.Count()
     << std::endl;
 
-  MapInserter handler(sw->seq, db);
+  MapInserter handler(req->seq, db);
   batch.Iterate(&handler);
 
-  return 0;
+  return ret;
+}
+
+/**
+ * handshake protocol cases to handle
+ *
+ * 1. fresh rocksdb <-> old offloader
+ *    offloader.guid is non-null and not equal rocksdb.guid
+ *    offloader.seq > rocksdb.seq and rocksdb.seq == 0
+ *       offloader sends back seq = 0
+ *       offloader adds delta to each received log
+ *
+ * 2. fresh rocksdb <-> fresh offloader
+ *    offloader.guid will be null
+ *    offloader.seq = rocksdb.seq = 0
+ *
+ * 3. old rocksdb   <-> old offloader
+ *    offloader.guid is non-null and equal rocksdb.guid
+ *    offloader.seq < rocksdb.seq and exists rocksdb wal < offloader.seq
+ *       offloader sends back seq from which to transmit
+ *    
+ * 4. old rocksdb   <-> fresh offloader 
+ *    offloader.guid is null and not equal rocksdb.guid
+ *    how to sync offloader if some logs were already deleted ?
+ *    maybe we dont want to handle this case ?
+ */
+int processInit(int sockfd, ReplDatabaseInit* req, size_t extraSz)
+{
+  int ret = 0;
+
+  SequenceNumber remote = req->seq;
+
+  if (db.seq_ > req->seq)
+  {
+    // new rocksdb was initialized
+  }
+  else 
+  {
+    // offloader is behind rocksdb
+  }
+
+  ReplLookupResponse* resp = nullptr;
+  size_t totalSz = sizeof(*resp);
+
+  ReplResponseHeader header;
+  header.op = rocksdb::ReplResponseOp::RESP_INIT1;
+  header.size = totalSz;
+
+  do {
+    ssize_t writeSz = 0;
+
+    writeSz = write(sockfd, (const void*)&header, sizeof(header));
+    if (writeSz != sizeof(header)) {
+      std::cout << "response header failed " << writeSz << std::endl;
+      ret = -1;
+      break;
+    }
+  
+    writeSz = write(sockfd, (const void*)resp, totalSz);
+    if (writeSz != totalSz) {
+      std::cout << "response header failed " << writeSz << std::endl;
+      ret = -1;
+      break;
+    }
+
+  } while (0);
+
+  free(resp);
+
+  return ret;
 }
 
 int main(int argc, char* argv[])
@@ -359,6 +432,20 @@ int main(int argc, char* argv[])
 
     switch (header.op) 
     {
+      case rocksdb::ReplRequestOp::OP_INIT1 : 
+      {
+        ReplDatabaseInit* req = (ReplDatabaseInit*)malloc(header.size);
+        readSz = read(newSocket, req, header.size);
+        if (readSz != header.size) 
+        {
+          eof = true;
+          break;
+        }
+
+        int ret = processInit(newSocket, req, header.size - sizeof(*req));
+        free(req);
+        if (ret != 0) break;
+      }
       case rocksdb::ReplRequestOp::OP_LOOKUP : 
       {
 
