@@ -516,7 +516,10 @@ int main(int argc, char* argv[])
         if (readSz != header.size) 
         {
           eof = true;
-          std::cout << __LINE__ << "got eof" << std::endl;
+          std::cout << __LINE__ 
+            << "got sz="  << readSz 
+            << " expected=" << header.size 
+            << std::endl;
           break;
         }
 
@@ -524,9 +527,11 @@ int main(int argc, char* argv[])
         free(req);
         if (ret != 0) 
         {
+          eof = true;
           std::cout << "got handshake error" << std::endl;
           break;
         }
+        break;
       }
       case rocksdb::ReplRequestOp::OP_LOOKUP : 
       {
@@ -536,7 +541,10 @@ int main(int argc, char* argv[])
         if (readSz != header.size) 
         {
           eof = true;
-          std::cout << __LINE__ << "got eof" << std::endl;
+          std::cout << __LINE__ 
+            << "got sz="  << readSz 
+            << " expected=" << header.size 
+            << std::endl;
           break;
         }
 
@@ -544,8 +552,11 @@ int main(int argc, char* argv[])
         free(req);
         if (ret != 0) 
         {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
           break;
         }
+        break;
       }
 
       case rocksdb::ReplRequestOp::OP_WAL :
@@ -556,12 +567,22 @@ int main(int argc, char* argv[])
         if (readSz != header.size) 
         {
           eof = true;
+          std::cout << __LINE__ 
+            << "got sz="  << readSz 
+            << " expected=" << header.size 
+            << std::endl;
           break;
         }
 
         int ret = processWAL(newSocket, sw, header.size - sizeof(*sw));
         free(sw);
-        if (ret != 0) break;
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
+          break;
+        }
+        break;
       }
 
       default:

@@ -123,13 +123,11 @@ int ReplThreadInfo::initialize(const std::string& guid,
   return err;
 }
 
-void DBImpl::ReplThreadBody(void* arg)
+void ReplThreadInfo::walUpdater()
 {
-  ReplThreadInfo* t = reinterpret_cast<ReplThreadInfo*>(arg);
+  auto& logger = info_log;
 
-  auto& logger = t->info_log;
-
-  t->started.store(true, std::memory_order_release);
+  started.store(true, std::memory_order_release);
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread started");
 
   std::unique_ptr<TransactionLogIterator> iter;
@@ -137,15 +135,15 @@ void DBImpl::ReplThreadBody(void* arg)
   ReplRequestHeader header;
   header.op = OP_WAL;
 
-  while (!t->stop.load(std::memory_order_acquire)) {
+  while (!stop.load(std::memory_order_acquire)) {
       
     iter.reset();
     Log(InfoLogLevel::INFO_LEVEL, logger, 
       "Repl thread asking for logs from seq=%llu",
-      t->lastReplSequence + 1);
+      lastReplSequence + 1);
         
-    while (!t->db->GetUpdatesSince(t->lastReplSequence + 1, &iter).ok()) {
-      if (!t->stop.load(std::memory_order_acquire)) {
+    while (!db->GetUpdatesSince(lastReplSequence + 1, &iter).ok()) {
+      if (!stop.load(std::memory_order_acquire)) {
         break;
       }
     }
@@ -174,14 +172,14 @@ void DBImpl::ReplThreadBody(void* arg)
       // GetUpdatesSince() will return the update with seq=M even 
       // though it is less than what you asked, because it is 
       // giving back the update that actually has seq=M
-      t->lastReplSequence = res.sequence + res.writeBatchPtr->Count() - 1;
+      lastReplSequence = res.sequence + res.writeBatchPtr->Count() - 1;
 
       {
-        std::unique_lock<std::mutex> l(t->sock_mutex);
+        std::unique_lock<std::mutex> l(sock_mutex);
 
         header.size = totalSz;
 
-        ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
+        ssize_t writeSz = write(socket, (const void*)&header, sizeof(header));
 
         if (writeSz != sizeof(header)) {
           Log(InfoLogLevel::ERROR_LEVEL, logger, 
@@ -192,7 +190,7 @@ void DBImpl::ReplThreadBody(void* arg)
           break;
         }
 
-        writeSz = write(t->socket, (const void*)sw, totalSz);
+        writeSz = write(socket, (const void*)sw, totalSz);
 
         if (writeSz != totalSz) {
           Log(InfoLogLevel::ERROR_LEVEL, logger, 
@@ -213,9 +211,16 @@ void DBImpl::ReplThreadBody(void* arg)
       );
     }
   }
-  t->has_stopped.store(true, std::memory_order_release);
+  has_stopped.store(true, std::memory_order_release);
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
 }
+
+void DBImpl::ReplThreadBody(void* arg)
+{
+  ReplThreadInfo* t = reinterpret_cast<ReplThreadInfo*>(arg);
+  t->walUpdater();
+}
+
 
 Status ReplThreadInfo::Get(const ReadOptions& options, 
   ColumnFamilyHandle* column_family,
@@ -242,7 +247,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 
     header.size = totalSz;
     ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
-    if (writeSz != (ssize_t)header.size) {
+    if (writeSz != sizeof(header)) {
       Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header write failed");
       status = Status::IOError("Repl header write failed");
       break;

@@ -32,6 +32,8 @@ struct ReplThreadInfo {
 
   SequenceNumber lastReplSequence;
 
+  void walUpdater();
+
   int initialize(const std::string& guid,
       SequenceNumber lastSequence);
 

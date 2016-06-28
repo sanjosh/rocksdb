@@ -18,6 +18,12 @@ std::string kDBPath = "/tmp/rocksdb_repl_example";
 
 static constexpr size_t NumKeys = 5;
 
+static void waitForUser()
+{
+  std::cout << "enter char to continue" << std::endl;
+  getchar();
+}
+
 int main() {
   DB* db;
   Options options;
@@ -42,10 +48,10 @@ int main() {
     std::string value = "value_" + std::to_string(10 + i);
     s = db->Put(WriteOptions(), key, value);
     assert(s.ok());
-    usleep(100); // delayed write
   }
 
-  /*
+  waitForUser();
+
   for (int i = 0; i < NumKeys; i++) 
   {
     std::string returnValue;
@@ -56,6 +62,8 @@ int main() {
       << ":value=" << returnValue
       << std::endl;
   }
+
+  waitForUser();
 
   {
     WriteBatch batch;
@@ -67,7 +75,7 @@ int main() {
     assert(s.ok());
   }
   
-  usleep(10000);
+  waitForUser();
 
   for (int i = 0; i < NumKeys; i++) 
   {
@@ -79,10 +87,8 @@ int main() {
       << ":value=" << returnValue
       << std::endl;
   }
-  */
 
-  getchar();
-  usleep(10000);
+  waitForUser();
 
   delete db;
 
