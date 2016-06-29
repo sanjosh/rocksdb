@@ -15,47 +15,6 @@ class ReadOptions;
 class ColumnFamilyHandle;
 class Slice;
 
-struct ReplThreadInfo {
-
-  rocksdb::DBImpl* db = nullptr;
-  std::shared_ptr<rocksdb::Logger> info_log = nullptr;
-
-  std::atomic<bool> stop; // replace by cv
-  std::atomic<bool> has_stopped;
-  std::atomic<bool> started;
-
-  std::mutex sock_mutex;
-
-  int socket = -1; // used to send WAL to offloader
-  int port = -1;
-  std::string addr;
-
-  SequenceNumber lastReplSequence;
-
-  void walUpdater();
-
-  int initialize(const std::string& guid,
-      SequenceNumber lastSequence);
-
-  Status Get(const ReadOptions& options, 
-    ColumnFamilyHandle* column_family,
-    const Slice& key, 
-    SequenceNumber snapshot, 
-    std::string* value,
-    bool* value_found = nullptr);
-
-  void AddIterators(uint32_t cfid,
-    const ReadOptions& read_options,
-    const EnvOptions& soptions,
-    MergeIteratorBuilder* merge_iter_builder);
-
-  bool IsReplicated() const
-  {
-    return (socket != -1);
-  }
-};
-
-
 
 #define RESP_BEGIN 1000
 // communication format between rocksdb and Offloader
@@ -81,6 +40,61 @@ enum ReplRequestOp
 };
 
 typedef ReplRequestOp ReplResponseOp;
+
+
+struct ReplSocket
+{
+  int sock_fd;
+  int port;
+  std::string addr;
+  std::mutex sock_mutex; // dont need it on server-offloader size
+  std::shared_ptr<rocksdb::Logger> logger = nullptr;
+
+  int connect(const std::string& in_addr, int in_port,
+      std::shared_ptr<rocksdb::Logger> in_logger);
+
+  int writeSock(ReplRequestOp op, const void* data, const size_t totalSz);
+
+  int readSock(ReplResponseOp op, void** data, ssize_t &returnSz);
+};
+
+struct ReplThreadInfo {
+
+  rocksdb::DBImpl* db = nullptr;
+  std::shared_ptr<rocksdb::Logger> info_log = nullptr;
+
+  std::atomic<bool> stop; // replace by cv
+  std::atomic<bool> has_stopped;
+  std::atomic<bool> started;
+
+  ReplSocket sock;
+
+  SequenceNumber lastReplSequence;
+
+  void walUpdater();
+
+  int initialize(const std::string& guid,
+      SequenceNumber lastSequence,
+      const std::string& addr,
+      int port);
+
+  Status Get(const ReadOptions& options, 
+    ColumnFamilyHandle* column_family,
+    const Slice& key, 
+    SequenceNumber snapshot, 
+    std::string* value,
+    bool* value_found = nullptr);
+
+  void AddIterators(uint32_t cfid,
+    const ReadOptions& read_options,
+    const EnvOptions& soptions,
+    MergeIteratorBuilder* merge_iter_builder);
+
+  bool IsReplicated() const
+  {
+    return (sock.sock_fd != -1);
+  }
+};
 
 struct ReplRequestHeader
 {

@@ -16,7 +16,7 @@ using namespace rocksdb;
 
 std::string kDBPath = "/tmp/rocksdb_repl_example";
 
-static constexpr size_t NumKeys = 500000;
+static constexpr size_t NumKeys = 5;
 
 static void waitForUser()
 {
@@ -59,7 +59,7 @@ int main() {
     s = db->Get(ReadOptions(), key, &returnValue);
     std::cout << "Obtained key=" << key 
       << ":status=" << s.ToString() 
-      << ":value=" << returnValue
+      << ":value=" << returnValue.substr(0, 10)
       << std::endl;
   }
 
@@ -84,7 +84,7 @@ int main() {
     s = db->Get(ReadOptions(), key, &returnValue);
     std::cout << "Obtained key=" << key 
       << ":status=" << s.ToString() 
-      << ":value=" << returnValue
+      << ":value_empty=" << returnValue.empty()
       << std::endl;
   }
 

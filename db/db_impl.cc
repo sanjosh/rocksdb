@@ -5655,14 +5655,14 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
     impl->repl_thread_info_.info_log = impl->db_options_.info_log;
     impl->repl_thread_info_.stop = false;
     impl->repl_thread_info_.has_stopped = false;
-    impl->repl_thread_info_.port = impl->db_options_.repl_port;
-    impl->repl_thread_info_.addr = impl->db_options_.repl_addr;
 
     std::string identity;
     auto dbStat = impl->GetDbIdentity(identity);
 
     int replRet = impl->repl_thread_info_.initialize(identity, 
-      impl->GetLatestSequenceNumber());
+      impl->GetLatestSequenceNumber(),
+      impl->db_options_.repl_addr,
+      impl->db_options_.repl_port);
 
     if (replRet == 0) {
       impl->env_->StartThread(DBImpl::ReplThreadBody, &impl->repl_thread_info_);

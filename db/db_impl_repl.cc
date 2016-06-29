@@ -14,8 +14,13 @@
 
 namespace rocksdb {
 
-static int ConnectSocket(std::string& addr, int port, int& sock_fd)
+int ReplSocket::connect(const std::string& in_addr, int in_port,
+    std::shared_ptr<rocksdb::Logger> in_logger)
 {
+  this->addr = in_addr;
+  this->port = in_port;
+  this->logger = in_logger;
+
   sock_fd = socket(PF_INET, SOCK_STREAM, 0);
 
   struct sockaddr_in server_addr;
@@ -27,7 +32,7 @@ static int ConnectSocket(std::string& addr, int port, int& sock_fd)
   memset(server_addr.sin_zero, '\0', sizeof(server_addr.sin_zero));
   server_addr_size = sizeof(server_addr);
 
-  int err = connect(sock_fd, (struct sockaddr*)&server_addr, server_addr_size);
+  int err = ::connect(sock_fd, (struct sockaddr*)&server_addr, server_addr_size);
   if (err < 0) 
   {
     close(sock_fd);
@@ -37,66 +42,104 @@ static int ConnectSocket(std::string& addr, int port, int& sock_fd)
   return err;
 }
 
-class ReplSocket
+int ReplSocket::writeSock(ReplRequestOp op, const void* data, const size_t totalSz)
 {
-  int writeSocket(int sockfd, ReplRequestOp op, 
-    const void* data, const size_t totalSz)
+  int err = 0;
+
+  do {
+
+    std::unique_lock<std::mutex> l(sock_mutex);
+
+    ReplRequestHeader header;
+    header.op = op;
+    header.size = totalSz;
+
+    ssize_t writeSz = 0;
+
+    writeSz = ::write(sock_fd, (const void*)&header, sizeof(header));
+
+    if (writeSz != sizeof(header)) {
+      err = -errno;
+      Log(InfoLogLevel::ERROR_LEVEL, logger, 
+        "write failed sz=%ld expected=%ld errno=%d", 
+        writeSz, 
+        sizeof(header),
+        errno);
+      break;
+    }
+
+    writeSz = write(sock_fd, (const void*)data, totalSz);
+
+    if (writeSz != (ssize_t)totalSz) {
+      err = -errno;
+      Log(InfoLogLevel::ERROR_LEVEL, logger, 
+        "write failed sz=%ld expected=%ld errno=%d", 
+        writeSz, 
+        totalSz,
+        errno);
+      break;
+    }
+
+  } while (0);
+
+  return err;
+}
+
+int ReplSocket::readSock(ReplResponseOp op, void** returnedData, ssize_t &returnSz)
+{
+  int err = 0;
+
+  do
   {
+    std::unique_lock<std::mutex> l(sock_mutex);
 
-    int err = 0;
+    // read resp
+    ReplResponseHeader respHeader;
+    ssize_t readSz = read(sock_fd, (void*)&respHeader, sizeof(respHeader));
 
-    do {
+    if (readSz != sizeof(respHeader)) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
+      err = -errno;
+      break;
+    }
 
-      ReplRequestHeader header;
-      header.op = op;
-      header.size = totalSz;
+    if (respHeader.op != op) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header bad op=%d expect=%d failed",
+        respHeader.op, op);
+      err = -errno;
+      break;
+    }
 
-      ssize_t writeSz = 0;
+    char* lresp = (char*)malloc(respHeader.size);
+    readSz = read(sock_fd, (void*)lresp, respHeader.size);
 
-      writeSz = write(socket, (const void*)&header, sizeof(header));
+    if (readSz != (ssize_t)respHeader.size) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
+      err = -errno;
+      break;
+    }
 
-      if (writeSz != sizeof(header)) {
-        err = -errno;
-        Log(InfoLogLevel::ERROR_LEVEL, logger, 
-          "write failed sz=%ld expected=%ld errno=%d", 
-          writeSz, 
-          sizeof(header),
-          errno);
-        break;
-      }
+    returnSz = readSz;
+    *returnedData = lresp;
 
-      writeSz = write(socket, (const void*)data, totalSz);
+  } while (0);
 
-      if (writeSz != totalSz) {
-        err = -errno;
-        Log(InfoLogLevel::ERROR_LEVEL, logger, 
-          "write failed sz=%ld expected=%ld errno=%d", 
-          writeSz, 
-          totalSz,
-          errno);
-        break;
-      }
+  return err;
+}
 
-    } while (0);
-
-    return err;
-  }
-
-  int readSocket(int sockfd, ReplResponseOp op, 
-    const void* data, const size_t size)
-  {
-  }
-};
+// =====================
 
 int ReplThreadInfo::initialize(const std::string& guid,
-    SequenceNumber lastSequence)
+    SequenceNumber lastSequence,
+    const std::string& addr,
+    int port)
 {
   auto& logger = info_log;
 
   int err = 0;
   do {
 
-    err = ConnectSocket(addr, port, socket);
+    err = sock.connect(addr, port, logger);
 
     if (err < 0)
     {
@@ -109,57 +152,20 @@ int ReplThreadInfo::initialize(const std::string& guid,
     }
 
     ssize_t totalSz = sizeof(ReplDatabaseInit) + guid.size();
-
-    ReplRequestHeader header;
-    header.op = OP_INIT1;
-    header.size = totalSz;
-
-    ssize_t writeSz = write(socket, (const void*)&header, sizeof(header));
-
-    if (writeSz != sizeof(header)) {
-      err = -errno;
-      Log(InfoLogLevel::ERROR_LEVEL, logger, 
-        "write failed sz=%ld expected=%ld errno=%d", 
-        writeSz, 
-        sizeof(header),
-        errno);
-      break;
-    }
-
     ReplDatabaseInit* initReq = (ReplDatabaseInit*)malloc(totalSz);
-
     initReq->seq = lastSequence;
     initReq->identitySize = guid.size();
     memcpy(initReq->identity, guid.data(), guid.size());
 
-    writeSz = write(socket, (const void*)initReq, totalSz);
-
-    if (writeSz != totalSz) {
-      err = -errno;
-      Log(InfoLogLevel::ERROR_LEVEL, logger, 
-        "write failed sz=%ld expected=%ld errno=%d", 
-        writeSz, 
-        totalSz,
-        errno);
+    err = sock.writeSock(OP_INIT1, initReq, totalSz);
+    if (err < 0) {
       break;
     }
 
-    // read resp
-    ReplResponseHeader respHeader;
-    ssize_t readSz = read(socket, (void*)&respHeader, sizeof(respHeader));
-
-    if (readSz != sizeof(respHeader)) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
-      err = -errno;
-      break;
-    }
-
-    ReplDatabaseResp* lresp = (ReplDatabaseResp*) malloc(respHeader.size);
-    readSz = read(socket, (void*)lresp, respHeader.size);
-
-    if (readSz != (ssize_t)respHeader.size) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
-      err = -errno;
+    ReplDatabaseResp* lresp;
+    ssize_t readSz;
+    err = sock.readSock(RESP_INIT1, (void**)&lresp, readSz);
+    if (err < 0) {
       break;
     }
 
@@ -168,6 +174,8 @@ int ReplThreadInfo::initialize(const std::string& guid,
       lastSequence, lresp->seq);
 
     lastReplSequence = lresp->seq;
+    // TODO ; process guid
+    free(lresp);
 
   } while (0);
 
@@ -183,8 +191,6 @@ void ReplThreadInfo::walUpdater()
 
   std::unique_ptr<TransactionLogIterator> iter;
 
-  ReplRequestHeader header;
-  header.op = OP_WAL;
 
   while (!stop.load(std::memory_order_acquire)) {
       
@@ -209,12 +215,6 @@ void ReplThreadInfo::walUpdater()
       BatchResult res = iter->GetBatch();
 
       auto batch = res.writeBatchPtr->Data();
-      ssize_t totalSz = sizeof(ReplWALUpdate) + batch.size();
-
-      // TODO : combine into an operator new + ctor
-      ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
-      memcpy(sw->buf, batch.data(), batch.size());
-      sw->seq = res.sequence;
 
       // When you commit a WriteBatch at seq=M with (say) 3 upd
       // rocksdb increments sequence number by 3 to M+3
@@ -226,33 +226,18 @@ void ReplThreadInfo::walUpdater()
       lastReplSequence = res.sequence + res.writeBatchPtr->Count() - 1;
 
       {
-        std::unique_lock<std::mutex> l(sock_mutex);
+        ssize_t totalSz = sizeof(ReplWALUpdate) + batch.size();
+  
+        // TODO : combine into an operator new + ctor
+        ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
+        memcpy(sw->buf, batch.data(), batch.size());
+        sw->seq = res.sequence;
 
-        header.size = totalSz;
+        int err = sock.writeSock(OP_WAL, sw, totalSz);
+        (void)err;
 
-        ssize_t writeSz = write(socket, (const void*)&header, sizeof(header));
-
-        if (writeSz != sizeof(header)) {
-          Log(InfoLogLevel::ERROR_LEVEL, logger, 
-            "write failed sz=%ld expected=%ld errno=%d", 
-            writeSz, 
-            sizeof(header),
-            errno);
-          break;
-        }
-
-        writeSz = write(socket, (const void*)sw, totalSz);
-
-        if (writeSz != totalSz) {
-          Log(InfoLogLevel::ERROR_LEVEL, logger, 
-            "write failed sz=%ld expected=%ld errno=%d", 
-            writeSz, 
-            totalSz,
-            errno);
-        }
+        free(sw);
       }
-
-      free(sw);
 
       Log(InfoLogLevel::INFO_LEVEL, logger, 
         "Repl thread sent seq=%llu actual batch=%lu numUpd=%d ", 
@@ -282,70 +267,39 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 {
   Status status;
 
-  ReplThreadInfo* t = this;
-  auto& logger = info_log;
-
-  ReplRequestHeader header;
-  header.op = OP_LOOKUP;
-
-  ReplResponseHeader respHeader;
+  //auto& logger = info_log;
 
   do {
 
-    std::unique_lock<std::mutex> l(sock_mutex);
-
     const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();
-
-    header.size = totalSz;
-    ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
-    if (writeSz != sizeof(header)) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header write failed");
-      status = Status::IOError("Repl header write failed");
-      break;
-    }
-
     ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
     lreq->cfid = column_family->GetID();
     memcpy(lreq->key, key.data(), key.size());
     lreq->seq = seq;
 
-    writeSz = write(t->socket, (const void*)lreq, totalSz);
+    int err = sock.writeSock(OP_LOOKUP, lreq, totalSz);
+    (void)err;
+
     free((void*)lreq);
 
-    if (writeSz != totalSz) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data write failed");
-      status = Status::IOError("Repl data write failed");
-      break;
-    }
-
-    ssize_t readSz = read(t->socket, (void*)&respHeader, sizeof(respHeader));
-
-    if (readSz != sizeof(respHeader)) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
-      status = Status::IOError("Repl header read failed");
-      break;
-    }
-
-    ReplLookupResponse* lresp = (ReplLookupResponse*) malloc(respHeader.size);
-    readSz = read(t->socket, (void*)lresp, respHeader.size);
-
-    if (readSz != (ssize_t)respHeader.size) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
-      status = Status::IOError("Repl data read failed");
-      break;
-    }
+    ReplLookupResponse* lresp;
+    ssize_t readSz;
+    err = sock.readSock(RESP_LOOKUP, (void**)&lresp, readSz);
 
     if (lresp->found) {
       if (value_found) {
         *value_found = lresp->found; 
       }
       if (value) {
-        value->assign(lresp->value, respHeader.size);
+        value->assign(lresp->value, readSz - sizeof(ReplLookupResponse));
       }
       status = Status::OK();
     } else {
       status = Status::NotFound();
     }
+
+    free(lresp);
+
   } while (0);
   
   return status;
@@ -375,81 +329,69 @@ public:
     return valid_;
   }
 
-  virtual void SeekInternal(ReplCursorOpenReq* oc) 
+  virtual int SeekInternal(ReplCursorOpenReq* oc, size_t extraSz) 
   {
     ReplThreadInfo* t = &repl_thread_info_;
 
-    const ssize_t totalSz = sizeof(ReplCursorOpenReq) + oc->size;
-    ReplRequestHeader header;
-    header.op = ReplRequestOp::OP_INIT1;
-    header.size = totalSz;
-
-    int ret = 0;
+    int err = 0;
 
     do {
-      ssize_t writeSz = write(t->socket, (const void*)&header, sizeof(header));
-      if (writeSz != sizeof(header)) 
-      {
-        ret = -errno; 
+
+      const ssize_t totalSz = sizeof(ReplCursorOpenReq) + extraSz;
+
+      err = t->sock.writeSock(OP_CURSOR_OPEN, oc, totalSz);
+      if (err < 0) {
         break;
       }
 
-      writeSz = write(t->readSocket, (const void*)oc, totalSz);
-      if (writeSz != totalSz)
-      {
-        ret = -errno;
+      ReplCursorOpenResp* resp;
+      ssize_t readSz;
+
+      err = t->sock.readSock(RESP_CURSOR_OPEN, (void**)&resp, readSz);
+      if (err < 0) {
         break;
       }
 
-      ReplResponseHeader respHeader;
-      ssize_t readSz = read(t->socket, (void*)&respHeader, sizeof(respHeader));
-      if (readSz != sizeof(resp))
-      {
-        ret = -errno;
-        break;
-      }
-        
-      ReplCursorOpenResp* resp = (ReplCursorOpenResp*)malloc(respHeader.size);
-      readSz = read(t->socket, (void*)&resp, respHeader.size);
-      if (readSz != respHeader.size) 
-      {
-        ret = -errno;
-        break;
-      }
-
-      // success
+      // TODO update cursor
+      free(resp);
 
     } while (0);
 
-    return ret;
+    return err;
   }
 
   virtual void Seek(const Slice& k) override 
   {
-    ReplCursorOpenReq* oc = malloc(sizeof(ReplCursorOpenReq)) + k.size();
+    ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq) + k.size());
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     memcpy(oc->buf, k.data(), k.size());
 
-    SeekInternal(oc);
+    SeekInternal(oc, k.size());
+
+    free(oc);
   }
   virtual void SeekToFirst() override 
   {
-    ReplCursorOpenReq* oc = malloc(sizeof(ReplCursorOpenReq)) + k.size();
+    ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq));
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = true;
 
-    SeekInternal(oc);
+    SeekInternal(oc, 0);
+
+    free(oc);
   }
   virtual void SeekToLast() override 
   {
-    ReplCursorOpenReq* oc = malloc(sizeof(ReplCursorOpenReq)) + k.size();
+    ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq));
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekLast = true;
 
-    SeekInternal(oc);
+    SeekInternal(oc, 0);
+
+    free(oc);
   }
   virtual void Next() override 
   {
