@@ -161,8 +161,8 @@ int ReplThreadInfo::initialize(const std::string& guid,
       break;
     }
 
-    ssize_t totalSz = sizeof(ReplDatabaseInit) + guid.size();
-    ReplDatabaseInit* initReq = (ReplDatabaseInit*)malloc(totalSz);
+    ssize_t totalSz = sizeof(ReplDBReq) + guid.size();
+    ReplDBReq* initReq = (ReplDBReq*)malloc(totalSz);
     initReq->seq = lastSequence;
     initReq->identitySize = guid.size();
     memcpy(initReq->identity, guid.data(), guid.size());
@@ -172,7 +172,7 @@ int ReplThreadInfo::initialize(const std::string& guid,
       break;
     }
 
-    ReplDatabaseResp* lresp;
+    ReplDBResp* lresp;
     ssize_t readSz;
     ReplResponseOp op;
     err = sock.readSock(op, (void**)&lresp, readSz);
@@ -280,8 +280,8 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 
   do {
 
-    const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();
-    ReplLookupRequest* lreq = (ReplLookupRequest*) malloc(totalSz);
+    const ssize_t totalSz = sizeof(ReplLookupReq) + key.size();
+    ReplLookupReq* lreq = (ReplLookupReq*) malloc(totalSz);
     lreq->cfid = column_family->GetID();
     memcpy(lreq->key, key.data(), key.size());
     lreq->seq = seq;
@@ -291,7 +291,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 
     free((void*)lreq);
 
-    ReplLookupResponse* lresp;
+    ReplLookupResp* lresp;
     ssize_t readSz;
     ReplResponseOp op;
     err = sock.readSock(op, (void**)&lresp, readSz);
@@ -305,7 +305,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
         *value_found = lresp->found; 
       }
       if (value) {
-        value->assign(lresp->value, readSz - sizeof(ReplLookupResponse));
+        value->assign(lresp->value, readSz - sizeof(ReplLookupResp));
       }
       status = Status::OK();
     } else {
@@ -394,8 +394,14 @@ public:
         break;
       }
 
-      // TODO check status
-      remote_cursor_id_ = resp->cursor_id;
+      if (resp->status == Status::Code::kOk)
+      {
+        remote_cursor_id_ = resp->cursor_id;
+        valid_ = true;
+        key_ = "key_fixed";
+        value_ = "value_fixed";
+        internalKey_ = InternalKey(key_, 1, kTypeValue);
+      }
 
     } while (0);
 
@@ -460,8 +466,12 @@ public:
       err = t->sock.readSock(op, (void**)&resp, readSz);
 
       if (op != RESP_CURSOR_NEXT || err < 0) {
+        valid_ = false;
         break;
       }
+
+      // TODO 
+      valid_ = false;
 
     } while (0);
     
@@ -474,7 +484,7 @@ public:
   }
   virtual Slice key() const override
   {
-    return key_;
+    return internalKey_.Encode();
   }
   virtual Slice value() const override
   {
@@ -506,6 +516,7 @@ public:
 
   int32_t remote_cursor_id_ = -1; // TODO create invalid 
 
+  InternalKey internalKey_; 
   Slice key_;
   Slice value_;
   Status remoteStatus_;
@@ -524,7 +535,7 @@ void ReplThreadInfo::AddIterators(uint32_t cfid,
   const EnvOptions& soptions,
   MergeIteratorBuilder* merge_iter_builder) {
 
-  SequenceNumber seqnum = 0; // do we need to retrieve based on snapshot ?
+  SequenceNumber seqnum = 0; // TODO retrieve based on snapshot
 
   auto* arena = merge_iter_builder->GetArena();
 

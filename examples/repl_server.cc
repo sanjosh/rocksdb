@@ -19,7 +19,7 @@
 #include "rocksdb/write_batch.h" // WriteBatch
 #include "db/version_edit.h" // VersionEdit
 #include "db/write_batch_internal.h" // WriteBatchInternal
-#include "db/dbformat.h" // ValueType
+#include "db/dbformat.h" // ValueType and InternalKey
 #include "db/db_repl.h" // Repl structures
 
 using rocksdb::WriteBatch;
@@ -27,10 +27,10 @@ using rocksdb::ReplSocket;
 using rocksdb::ReplWALUpdate;
 using rocksdb::ReplRequestHeader;
 using rocksdb::ReplResponseHeader;
-using rocksdb::ReplDatabaseInit;
-using rocksdb::ReplDatabaseResp;
-using rocksdb::ReplLookupResponse;
-using rocksdb::ReplLookupRequest;
+using rocksdb::ReplDBReq;
+using rocksdb::ReplDBResp;
+using rocksdb::ReplLookupResp;
+using rocksdb::ReplLookupReq;
 using rocksdb::ReplRequestOp;
 using rocksdb::ReplResponseOp;
 using rocksdb::ReplCursorOpenReq;
@@ -40,6 +40,8 @@ using rocksdb::Status;
 using rocksdb::ValueType;
 using rocksdb::SequenceNumber;
 using rocksdb::ColumnFamilyHandle;
+using rocksdb::InternalKey;
+using rocksdb::LookupKey;
 
 /**
  * Store database GUID <-> last_seq, cf
@@ -112,6 +114,12 @@ struct DBWrapper {
 
   std::string identity_; // guid of upstream rocksdb instance
 
+  rocksdb::InternalKeyComparator* cmp{nullptr};
+
+  ~DBWrapper() 
+  {
+    delete cmp;
+  }
 
   void init(bool newInstance)
   {
@@ -120,6 +128,8 @@ struct DBWrapper {
       options.create_if_missing = true;
       options.error_if_exists = false;
     }
+    //cmp = new rocksdb::InternalKeyComparator(options.comparator);
+    //options.comparator = cmp;
 
     auto s = rocksdb::DB::Open(options, kDBPath, &rocksdb_);
     assert(s.ok());
@@ -171,7 +181,8 @@ struct MapInserter : public WriteBatch::Handler {
 
     auto cf = db_.openHandle(cfid);
 
-    MemKey k(seq_, key.ToString());
+    //InternalKey k(key, seq_, ValueType::kTypeValue);
+    //rocksdb::Slice kSlice = k.Encode();
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, key, value);
 
     return status;
@@ -184,7 +195,8 @@ struct MapInserter : public WriteBatch::Handler {
       << ":key=" << key.ToString()
       << std::endl;
 
-    MemKey k(seq_, key.ToString());
+    //InternalKey k(key, seq_, ValueType::kTypeValue);
+    //rocksdb::Slice kSlice = k.Encode();
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), key, value);
     assert(status.ok());
   }
@@ -198,8 +210,9 @@ struct MapInserter : public WriteBatch::Handler {
 
     auto cf = db_.openHandle(cfid);
 
-    MemKey k(seq_, key.ToString());
-    db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, rocksdb::Slice(key.data(), key.size()));
+    //InternalKey k(key, seq_, ValueType::kTypeDeletion);
+    //rocksdb::Slice kSlice = k.Encode();
+    db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, key);
 
     return Status::OK();
   }
@@ -210,8 +223,9 @@ struct MapInserter : public WriteBatch::Handler {
       << ":key=" << key.ToString()
       << std::endl;
 
-    MemKey k(seq_, key.ToString());
-    db.rocksdb_->Delete(rocksdb::WriteOptions(), rocksdb::Slice(key.data(), key.size()));
+    //InternalKey k(key, seq_, rocksdb::ValueType::kTypeDeletion);
+    //rocksdb::Slice kSlice = k.Encode();
+    db.rocksdb_->Delete(rocksdb::WriteOptions(), key);
   }
 
   virtual void LogData(const Slice& blob)
@@ -269,7 +283,7 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   return err;
 }
 
-int processLookup(ReplSocket& sock, ReplLookupRequest* req, int extraSz)
+int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 {
   std::string lookupKey(req->key, extraSz);
   uint32_t cfid = req->cfid;
@@ -282,16 +296,20 @@ int processLookup(ReplSocket& sock, ReplLookupRequest* req, int extraSz)
     << ":seq=" << req->seq
     << std::endl;
 
-  ReplLookupResponse* resp = nullptr;
+  ReplLookupResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
 
   auto cf = db.openHandle(cfid);
 
   int ret = 0;
 
+  // TODO use LookupKey ?
+  //rocksdb::InternalKey internalKey(lookupKey, db.seq_, rocksdb::kValueTypeForSeek);
+
   if (cf != nullptr)
   {
     std::string value;
+    //rocksdb::Slice kSlice = internalKey.Encode(); // internal_key ?
     auto s = db.rocksdb_->Get(rocksdb::ReadOptions(), cf, lookupKey, &value);
 
     if (s.ok()) 
@@ -299,7 +317,7 @@ int processLookup(ReplSocket& sock, ReplLookupRequest* req, int extraSz)
       std::cout << "found value=" << value.substr(0, 10) << " for key=" << lookupKey << std::endl;
 
       totalSz += value.size();
-      resp = (ReplLookupResponse*)malloc(totalSz);
+      resp = (ReplLookupResp*)malloc(totalSz);
       resp->found = true;
       memcpy(resp->value, value.data(), value.size());
       resp->status = Status::Code::kOk;
@@ -307,7 +325,7 @@ int processLookup(ReplSocket& sock, ReplLookupRequest* req, int extraSz)
     else 
     {
       // key not found
-      resp = (ReplLookupResponse*)malloc(totalSz);
+      resp = (ReplLookupResp*)malloc(totalSz);
       resp->found = false;
       resp->status = Status::Code::kOk;
       std::cout << "not finding key=" << lookupKey << std::endl;
@@ -315,7 +333,7 @@ int processLookup(ReplSocket& sock, ReplLookupRequest* req, int extraSz)
   } 
   else 
   {
-    resp = (ReplLookupResponse*)malloc(totalSz);
+    resp = (ReplLookupResp*)malloc(totalSz);
     resp->status = Status::Code::kInvalidArgument;
     std::cout << "not found cf=" << cfid << std::endl;
   }
@@ -374,7 +392,7 @@ int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
  *    how to sync offloader if some logs were already deleted ?
  *    maybe we dont want to handle this case ?
  */
-int processInit(ReplSocket& sock, ReplDatabaseInit* req, size_t extraSz)
+int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
 {
   int ret = 0;
 
@@ -459,9 +477,9 @@ int processInit(ReplSocket& sock, ReplDatabaseInit* req, size_t extraSz)
     << ":case=" << caseString
     << std::endl;
 
-  ReplDatabaseResp* resp = nullptr;
+  ReplDBResp* resp = nullptr;
   size_t totalSz = sizeof(*resp) + responseIdentity.size();
-  resp = (ReplDatabaseResp*)malloc(totalSz);
+  resp = (ReplDBResp*)malloc(totalSz);
   resp->identitySize = responseIdentity.size();
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
@@ -496,7 +514,7 @@ void serverWorker(int sockfd)
     {
       case rocksdb::ReplRequestOp::OP_INIT1 : 
       {
-        ReplDatabaseInit* req = (ReplDatabaseInit*)void_req;
+        ReplDBReq* req = (ReplDBReq*)void_req;
 
         int ret = processInit(sock, req, returnSz - sizeof(*req));
 
@@ -512,7 +530,7 @@ void serverWorker(int sockfd)
       case rocksdb::ReplRequestOp::OP_LOOKUP : 
       {
 
-        ReplLookupRequest* req = (ReplLookupRequest*)void_req;
+        ReplLookupReq* req = (ReplLookupReq*)void_req;
 
         int ret = processLookup(sock, req, returnSz - sizeof(*req));
 

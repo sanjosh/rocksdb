@@ -70,7 +70,7 @@ int main() {
   {
     std::cout 
       << "key=" << iter->key().ToString()
-      << " value=" << iter->value().ToString()
+      << " value=" << iter->value().ToString().substr(0, 10)
       << std::endl;
   }
   delete iter;

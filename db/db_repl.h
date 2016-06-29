@@ -113,7 +113,7 @@ struct ReplRequestHeader
 typedef ReplRequestHeader ReplResponseHeader;
 
 // send different message for new db or existing db
-struct ReplDatabaseInit
+struct ReplDBReq
 {
   SequenceNumber seq;
   size_t identitySize;
@@ -121,7 +121,7 @@ struct ReplDatabaseInit
   // TODO send list of column families
 };
 
-struct ReplDatabaseResp
+struct ReplDBResp
 {
   SequenceNumber seq;
   size_t identitySize;
@@ -129,14 +129,14 @@ struct ReplDatabaseResp
   // TODO send back list of column families
 };
 
-struct ReplLookupRequest
+struct ReplLookupReq
 {
   uint32_t cfid; // column family id
   SequenceNumber seq;
   char key[0];
 };
 
-struct ReplLookupResponse
+struct ReplLookupResp
 {
   bool found;
   Status::Code status; 

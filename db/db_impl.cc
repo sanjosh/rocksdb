@@ -3286,19 +3286,23 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
   // Need to create internal iterator from the arena.
   MergeIteratorBuilder merge_iter_builder(&cfd->internal_comparator(), arena);
   // Collect iterator for mutable mem
-  merge_iter_builder.AddIterator(
+  // TODO SANDEEP added during testing - enable later
+  if (!repl_thread_info_.IsReplicated())  {
+    merge_iter_builder.AddIterator(
       super_version->mem->NewIterator(read_options, arena));
-  // Collect all needed child iterators for immutable memtables
-  super_version->imm->AddIterators(read_options, &merge_iter_builder);
-  // Collect iterators for files in L0 - Ln
-  super_version->current->AddIterators(read_options, env_options_,
-                                       &merge_iter_builder);
-
+    // Collect all needed child iterators for immutable memtables
+    super_version->imm->AddIterators(read_options, &merge_iter_builder);
+    // Collect iterators for files in L0 - Ln
+    super_version->current->AddIterators(read_options, env_options_,
+                                        &merge_iter_builder);
+  }
+  else {
   // Collect remote iterator
-  repl_thread_info_.AddIterators(cfd->GetID(),
-    read_options, 
-    env_options_, 
-    &merge_iter_builder);
+    repl_thread_info_.AddIterators(cfd->GetID(),
+      read_options, 
+      env_options_, 
+      &merge_iter_builder);
+  }
 
   internal_iter = merge_iter_builder.Finish();
   IterState* cleanup = new IterState(this, &mutex_, super_version);
@@ -3404,7 +3408,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
 
   if (!repl_thread_info_.IsReplicated()) {
 
-// TODO enable this code later for both client and server
+// TODO SANDEEP enable this code later for both client and server
     if (!skip_memtable) {
       if (sv->mem->Get(lkey, value, &s, &merge_context)) {
         done = true;
