@@ -65,6 +65,18 @@ int main() {
 
   waitForUser();
 
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for (iter->SeekToFirst(); iter->Valid(); iter->Next())
+  {
+    std::cout 
+      << "key=" << iter->key().ToString()
+      << " value=" << iter->value().ToString()
+      << std::endl;
+  }
+  delete iter;
+
+  waitForUser();
+
   {
     WriteBatch batch;
     for (int i = 0; i < NumKeys; i++) {

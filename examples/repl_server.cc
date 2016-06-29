@@ -101,9 +101,17 @@ static std::string kDBPath = "/tmp/rocksdb_repl_server";
 struct DBWrapper {
 
   std::map<uint32_t, rocksdb::ColumnFamilyHandle*> handles_;
+
+  std::map<uint32_t, rocksdb::Iterator*> openCursors_;
+
+  int32_t nextCursorId_{0};
+
   rocksdb::DB* rocksdb_{nullptr};
+
   SequenceNumber seq_{0}; // until which upstream rocksdb is synced
+
   std::string identity_; // guid of upstream rocksdb instance
+
 
   void init(bool newInstance)
   {
@@ -219,7 +227,49 @@ struct MapInserter : public WriteBatch::Handler {
 
 static constexpr int walPort = 8192;
 
-int processLookup(int sockfd, ReplLookupRequest* req, int extraSz)
+int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
+{
+  std::cout << "opened cursor" << std::endl;
+
+  auto iter = db.rocksdb_->NewIterator(rocksdb::ReadOptions());
+  db.openCursors_.insert(std::make_pair(db.nextCursorId_ ++, iter));
+
+  ReplCursorOpenResp* resp = nullptr;
+  size_t totalSz = sizeof(*resp);
+  resp = (ReplCursorOpenResp*)malloc(totalSz);
+
+  int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz);
+
+  return err;
+}
+
+int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int extraSz)
+{
+  std::cout << "next cursor" << std::endl;
+
+  rocksdb::ReplCursorNextResp* resp = nullptr;
+  size_t totalSz = sizeof(*resp);
+  resp = (rocksdb::ReplCursorNextResp*)malloc(totalSz);
+
+  int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
+
+  return err;
+}
+
+int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int extraSz)
+{
+  std::cout << "close cursor" << std::endl;
+
+  rocksdb::ReplCursorCloseResp* resp = nullptr;
+  size_t totalSz = sizeof(*resp);
+  resp = (rocksdb::ReplCursorCloseResp*)malloc(totalSz);
+
+  int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz);
+
+  return err;
+}
+
+int processLookup(ReplSocket& sock, ReplLookupRequest* req, int extraSz)
 {
   std::string lookupKey(req->key, extraSz);
   uint32_t cfid = req->cfid;
@@ -270,35 +320,14 @@ int processLookup(int sockfd, ReplLookupRequest* req, int extraSz)
     std::cout << "not found cf=" << cfid << std::endl;
   }
 
-  ReplResponseHeader header;
-  header.op = rocksdb::ReplResponseOp::RESP_LOOKUP;
-  header.size = totalSz;
-
-  do {
-    ssize_t writeSz = 0;
-
-    writeSz = write(sockfd, (const void*)&header, sizeof(header));
-    if (writeSz != sizeof(header)) {
-      std::cout << "response header failed " << writeSz << std::endl;
-      ret = -1;
-      break;
-    }
-  
-    writeSz = write(sockfd, (const void*)resp, totalSz);
-    if (writeSz != totalSz) {
-      std::cout << "response header failed " << writeSz << std::endl;
-      ret = -1;
-      break;
-    }
-
-  } while (0);
+  sock.writeSock(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz);
 
   free(resp);
 
   return ret;
 }
 
-int processWAL(int sockfd, ReplWALUpdate* req, size_t extraSz)
+int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
 {
   int ret = 0;
 
@@ -345,7 +374,7 @@ int processWAL(int sockfd, ReplWALUpdate* req, size_t extraSz)
  *    how to sync offloader if some logs were already deleted ?
  *    maybe we dont want to handle this case ?
  */
-int processInit(int sockfd, ReplDatabaseInit* req, size_t extraSz)
+int processInit(ReplSocket& sock, ReplDatabaseInit* req, size_t extraSz)
 {
   int ret = 0;
 
@@ -437,34 +466,13 @@ int processInit(int sockfd, ReplDatabaseInit* req, size_t extraSz)
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
 
-
-  ReplResponseHeader header;
-  header.op = rocksdb::ReplResponseOp::RESP_INIT1;
-  header.size = totalSz;
-
-  do {
-    ssize_t writeSz = 0;
-
-    writeSz = write(sockfd, (const void*)&header, sizeof(header));
-    if (writeSz != sizeof(header)) {
-      std::cout << "response header failed " << writeSz << std::endl;
-      ret = -1;
-      break;
-    }
-  
-    writeSz = write(sockfd, (const void*)resp, totalSz);
-    if (writeSz != totalSz) {
-      std::cout << "response header failed " << writeSz << std::endl;
-      ret = -1;
-      break;
-    }
-
-  } while (0);
+  sock.writeSock(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz);
 
   free(resp);
 
   return ret;
 }
+
 
 void serverWorker(int sockfd)
 {
@@ -490,7 +498,7 @@ void serverWorker(int sockfd)
       {
         ReplDatabaseInit* req = (ReplDatabaseInit*)void_req;
 
-        int ret = processInit(sockfd, req, returnSz - sizeof(*req));
+        int ret = processInit(sock, req, returnSz - sizeof(*req));
 
         free(req);
         if (ret != 0) 
@@ -506,7 +514,7 @@ void serverWorker(int sockfd)
 
         ReplLookupRequest* req = (ReplLookupRequest*)void_req;
 
-        int ret = processLookup(sockfd, req, returnSz - sizeof(*req));
+        int ret = processLookup(sock, req, returnSz - sizeof(*req));
 
         free(req);
 
@@ -523,8 +531,51 @@ void serverWorker(int sockfd)
       {
         ReplWALUpdate* sw = (ReplWALUpdate*)void_req;
 
-        int ret = processWAL(sockfd, sw, returnSz - sizeof(*sw));
+        int ret = processWAL(sock, sw, returnSz - sizeof(*sw));
         free(sw);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
+          break;
+        }
+        break;
+      }
+
+      case rocksdb::ReplRequestOp::OP_CURSOR_OPEN :
+      {
+        ReplCursorOpenReq* req = (ReplCursorOpenReq*)void_req;
+
+        int ret = processCursorOpen(sock, req, returnSz - sizeof(*req));
+        free(req);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
+          break;
+        }
+        break;
+      }
+      case rocksdb::ReplRequestOp::OP_CURSOR_NEXT :
+      {
+        rocksdb::ReplCursorNextReq* req = (rocksdb::ReplCursorNextReq*)void_req;
+
+        int ret = processCursorNext(sock, req, returnSz - sizeof(*req));
+        free(req);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got lookup error" << std::endl;
+          break;
+        }
+        break;
+      }
+      case rocksdb::ReplRequestOp::OP_CURSOR_CLOSE :
+      {
+        rocksdb::ReplCursorCloseReq* req = (rocksdb::ReplCursorCloseReq*)void_req;
+
+        int ret = processCursorClose(sock, req, returnSz - sizeof(*req));
+        free(req);
         if (ret != 0) 
         {
           eof = true;

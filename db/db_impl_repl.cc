@@ -334,8 +334,35 @@ public:
 
   ~ReplIterator() 
   {
-    //ReplCursorClose op;
-    //op.cursor_id = 0;
+    ReplThreadInfo* t = &repl_thread_info_;
+
+    int err = 0;
+    ReplCursorCloseReq* oc = (ReplCursorCloseReq*)malloc(sizeof(ReplCursorCloseReq));
+    const ssize_t totalSz = sizeof(ReplCursorCloseReq);
+    oc->cursor_id = remote_cursor_id_;
+
+    ReplCursorCloseResp* resp{nullptr};
+
+    do {
+
+      err = t->sock.writeSock(OP_CURSOR_CLOSE, oc, totalSz);
+      if (err < 0) {
+        break;
+      }
+
+      ssize_t readSz;
+      ReplResponseOp op;
+
+      err = t->sock.readSock(op, (void**)&resp, readSz);
+
+      if (op != RESP_CURSOR_CLOSE || err < 0) {
+        break;
+      }
+
+    } while (0);
+    
+    free(resp);
+    free(oc);
   }
 
   virtual bool Valid() const override 
@@ -348,6 +375,7 @@ public:
     ReplThreadInfo* t = &repl_thread_info_;
 
     int err = 0;
+    ReplCursorOpenResp* resp{nullptr};
 
     do {
 
@@ -358,7 +386,6 @@ public:
         break;
       }
 
-      ReplCursorOpenResp* resp;
       ssize_t readSz;
       ReplResponseOp op;
 
@@ -367,11 +394,12 @@ public:
         break;
       }
 
-      // TODO update cursor
-      free(resp);
+      // TODO check status
+      remote_cursor_id_ = resp->cursor_id;
 
     } while (0);
 
+    free(resp);
     return err;
   }
 
@@ -410,47 +438,35 @@ public:
   }
   virtual void Next() override 
   {
-    /*
-    ReplCursorNext next;
-    next.cursor_id = remote_cursor_id_;
-
     ReplThreadInfo* t = &repl_thread_info_;
 
-    do {
-      const ssize_t totalSz = sizeof(ReplCursorNext);
+    int err = 0;
+    ReplCursorNextReq* oc = (ReplCursorNextReq*)malloc(sizeof(ReplCursorNextReq));
+    const ssize_t totalSz = sizeof(ReplCursorNextReq);
+    oc->cursor_id = remote_cursor_id_;
 
-      const ssize_t writeSz = write(t->readSocket, (const void*)&next, totalSz);
-      if (writeSz != totalSz)
-      {
-        valid_ = false;
+    ReplCursorNextResp* resp{nullptr};
+
+    do {
+
+      err = t->sock.writeSock(OP_CURSOR_NEXT, oc, totalSz);
+      if (err < 0) {
         break;
       }
 
-      char buf[MaxResponseSize];
-      const ssize_t readSz = read(t->readSocket, (void*)buf, MaxResponseSize);
+      ssize_t readSz;
+      ReplResponseOp op;
 
-      ReplCursorNextResponse *resp = reinterpret_cast<ReplCursorNextResponse*>(buf);
+      err = t->sock.readSock(op, (void**)&resp, readSz);
 
-      if ((readSz < (ssize_t)sizeof(resp))
-       || ((readSz != (ssize_t)(sizeof(*resp) + resp->size))))
-      {
-        valid_ = false;
+      if (op != RESP_CURSOR_NEXT || err < 0) {
+        break;
       }
-      else 
-      {
-        if ((resp->status != Status::Code::kOk) ||
-          (resp->is_eof))
-        {
-          valid_ = false;
-        }
-        else 
-        {
-          // copy buf
-          valid_ = true;
-        }
-      }
+
     } while (0);
-    */
+    
+    free(resp);
+    free(oc);
   }
   virtual void Prev() override 
   {

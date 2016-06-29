@@ -3294,10 +3294,11 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
   super_version->current->AddIterators(read_options, env_options_,
                                        &merge_iter_builder);
 
-  //repl_thread_info_.AddIterators(cfd->GetID(),
-    //read_options, 
-    //env_options_, 
-    //&merge_iter_builder);
+  // Collect remote iterator
+  repl_thread_info_.AddIterators(cfd->GetID(),
+    read_options, 
+    env_options_, 
+    &merge_iter_builder);
 
   internal_iter = merge_iter_builder.Finish();
   IterState* cleanup = new IterState(this, &mutex_, super_version);
