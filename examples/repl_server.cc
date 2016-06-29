@@ -23,6 +23,7 @@
 #include "db/db_repl.h" // Repl structures
 
 using rocksdb::WriteBatch;
+using rocksdb::ReplSocket;
 using rocksdb::ReplWALUpdate;
 using rocksdb::ReplRequestHeader;
 using rocksdb::ReplResponseHeader;
@@ -31,6 +32,7 @@ using rocksdb::ReplDatabaseResp;
 using rocksdb::ReplLookupResponse;
 using rocksdb::ReplLookupRequest;
 using rocksdb::ReplRequestOp;
+using rocksdb::ReplResponseOp;
 using rocksdb::ReplCursorOpenReq;
 using rocksdb::ReplCursorOpenResp;
 using rocksdb::Slice;
@@ -244,7 +246,7 @@ int processLookup(int sockfd, ReplLookupRequest* req, int extraSz)
 
     if (s.ok()) 
     {
-      std::cout << "found value=" << value << " for key=" << lookupKey << std::endl;
+      std::cout << "found value=" << value.substr(0, 10) << " for key=" << lookupKey << std::endl;
 
       totalSz += value.size();
       resp = (ReplLookupResponse*)malloc(totalSz);
@@ -468,34 +470,28 @@ void serverWorker(int sockfd)
 {
   bool eof = false;
 
+  ReplSocket sock(sockfd);
+
   while (!eof) 
   {
-    ReplRequestHeader header;
-    ssize_t readSz = read(sockfd, &header, sizeof(header));
-    if (readSz != sizeof(header))
-    {
-      eof = true;
-      std::cout << __LINE__ << "got eof" << std::endl;
-      break;
-    } 
+    void* void_req;
+    ReplResponseOp op;
+    ssize_t returnSz;
 
-    switch (header.op) 
+    int err = sock.readSock(op, &void_req, returnSz);
+    if (err < 0) {
+      eof = true;
+      break;
+    }
+
+    switch (op) 
     {
       case rocksdb::ReplRequestOp::OP_INIT1 : 
       {
-        ReplDatabaseInit* req = (ReplDatabaseInit*)malloc(header.size);
-        readSz = read(sockfd, req, header.size);
-        if (readSz != header.size) 
-        {
-          eof = true;
-          std::cout << __LINE__ 
-            << "got sz="  << readSz 
-            << " expected=" << header.size 
-            << std::endl;
-          break;
-        }
+        ReplDatabaseInit* req = (ReplDatabaseInit*)void_req;
 
-        int ret = processInit(sockfd, req, header.size - sizeof(*req));
+        int ret = processInit(sockfd, req, returnSz - sizeof(*req));
+
         free(req);
         if (ret != 0) 
         {
@@ -508,20 +504,12 @@ void serverWorker(int sockfd)
       case rocksdb::ReplRequestOp::OP_LOOKUP : 
       {
 
-        ReplLookupRequest* req = (ReplLookupRequest*)malloc(header.size);
-        readSz = read(sockfd, req, header.size);
-        if (readSz != header.size) 
-        {
-          eof = true;
-          std::cout << __LINE__ 
-            << "got sz="  << readSz 
-            << " expected=" << header.size 
-            << std::endl;
-          break;
-        }
+        ReplLookupRequest* req = (ReplLookupRequest*)void_req;
 
-        int ret = processLookup(sockfd, req, header.size - sizeof(*req));
+        int ret = processLookup(sockfd, req, returnSz - sizeof(*req));
+
         free(req);
+
         if (ret != 0) 
         {
           eof = true;
@@ -533,20 +521,9 @@ void serverWorker(int sockfd)
 
       case rocksdb::ReplRequestOp::OP_WAL :
       {
+        ReplWALUpdate* sw = (ReplWALUpdate*)void_req;
 
-        ReplWALUpdate* sw = (ReplWALUpdate*)malloc(header.size);
-        readSz = read(sockfd, sw, header.size);
-        if (readSz != header.size) 
-        {
-          eof = true;
-          std::cout << __LINE__ 
-            << "got sz="  << readSz 
-            << " expected=" << header.size 
-            << std::endl;
-          break;
-        }
-
-        int ret = processWAL(sockfd, sw, header.size - sizeof(*sw));
+        int ret = processWAL(sockfd, sw, returnSz - sizeof(*sw));
         free(sw);
         if (ret != 0) 
         {
@@ -564,8 +541,6 @@ void serverWorker(int sockfd)
       }
     }
   }
-
-  close(sockfd);
 }
 
 int main(int argc, char* argv[])

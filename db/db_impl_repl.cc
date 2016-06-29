@@ -14,6 +14,20 @@
 
 namespace rocksdb {
 
+ReplSocket::ReplSocket()
+{
+}
+
+ReplSocket::ReplSocket(int sockfd)
+{
+  sock_fd = sockfd;
+}
+
+ReplSocket::~ReplSocket()
+{
+  close(sock_fd);
+}
+
 int ReplSocket::connect(const std::string& in_addr, int in_port,
     std::shared_ptr<rocksdb::Logger> in_logger)
 {
@@ -85,9 +99,10 @@ int ReplSocket::writeSock(ReplRequestOp op, const void* data, const size_t total
   return err;
 }
 
-int ReplSocket::readSock(ReplResponseOp op, void** returnedData, ssize_t &returnSz)
+int ReplSocket::readSock(ReplResponseOp& op, void** returnedData, ssize_t &returnSz)
 {
   int err = 0;
+  op = OP_WILDCARD;
 
   do
   {
@@ -103,12 +118,6 @@ int ReplSocket::readSock(ReplResponseOp op, void** returnedData, ssize_t &return
       break;
     }
 
-    if (respHeader.op != op) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header bad op=%d expect=%d failed",
-        respHeader.op, op);
-      err = -errno;
-      break;
-    }
 
     char* lresp = (char*)malloc(respHeader.size);
     readSz = read(sock_fd, (void*)lresp, respHeader.size);
@@ -119,6 +128,7 @@ int ReplSocket::readSock(ReplResponseOp op, void** returnedData, ssize_t &return
       break;
     }
 
+    op = respHeader.op;
     returnSz = readSz;
     *returnedData = lresp;
 
@@ -164,8 +174,9 @@ int ReplThreadInfo::initialize(const std::string& guid,
 
     ReplDatabaseResp* lresp;
     ssize_t readSz;
-    err = sock.readSock(RESP_INIT1, (void**)&lresp, readSz);
-    if (err < 0) {
+    ReplResponseOp op;
+    err = sock.readSock(op, (void**)&lresp, readSz);
+    if (op != OP_INIT1 || err < 0) {
       break;
     }
 
@@ -267,8 +278,6 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 {
   Status status;
 
-  //auto& logger = info_log;
-
   do {
 
     const ssize_t totalSz = sizeof(ReplLookupRequest) + key.size();
@@ -284,7 +293,12 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
 
     ReplLookupResponse* lresp;
     ssize_t readSz;
-    err = sock.readSock(RESP_LOOKUP, (void**)&lresp, readSz);
+    ReplResponseOp op;
+    err = sock.readSock(op, (void**)&lresp, readSz);
+
+    if (op != RESP_LOOKUP || err < 0) {
+      break;
+    }
 
     if (lresp->found) {
       if (value_found) {
@@ -346,9 +360,10 @@ public:
 
       ReplCursorOpenResp* resp;
       ssize_t readSz;
+      ReplResponseOp op;
 
-      err = t->sock.readSock(RESP_CURSOR_OPEN, (void**)&resp, readSz);
-      if (err < 0) {
+      err = t->sock.readSock(op, (void**)&resp, readSz);
+      if (op != RESP_CURSOR_OPEN || err < 0) {
         break;
       }
 

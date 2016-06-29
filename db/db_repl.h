@@ -20,6 +20,8 @@ class Slice;
 // communication format between rocksdb and Offloader
 enum ReplRequestOp
 {
+  OP_WILDCARD = 0,
+
   OP_INIT1 = 1,
 
   OP_WAL = 101,
@@ -44,8 +46,8 @@ typedef ReplRequestOp ReplResponseOp;
 
 struct ReplSocket
 {
-  int sock_fd;
-  int port;
+  int sock_fd{-1};
+  int port{-1};
   std::string addr;
   std::mutex sock_mutex; // dont need it on server-offloader size
   std::shared_ptr<rocksdb::Logger> logger = nullptr;
@@ -55,7 +57,13 @@ struct ReplSocket
 
   int writeSock(ReplRequestOp op, const void* data, const size_t totalSz);
 
-  int readSock(ReplResponseOp op, void** data, ssize_t &returnSz);
+  int readSock(ReplResponseOp& op, void** data, ssize_t &returnSz);
+
+  explicit ReplSocket();
+
+  explicit ReplSocket(int sockfd);
+
+  ~ReplSocket();
 };
 
 struct ReplThreadInfo {
