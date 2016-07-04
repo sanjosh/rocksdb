@@ -21,6 +21,7 @@
 #include "db/write_batch_internal.h" // WriteBatchInternal
 #include "db/dbformat.h" // ValueType and InternalKey
 #include "db/db_repl.h" // Repl structures
+#include "util/coding.h" // Repl structures
 
 using rocksdb::WriteBatch;
 using rocksdb::ReplSocket;
@@ -42,6 +43,10 @@ using rocksdb::SequenceNumber;
 using rocksdb::ColumnFamilyHandle;
 using rocksdb::InternalKey;
 using rocksdb::LookupKey;
+using rocksdb::PutFixed64;
+using rocksdb::PutFixed32;
+using rocksdb::GetFixed64;
+using rocksdb::GetVarint32;
 
 /**
  * Store database GUID <-> last_seq, cf
@@ -68,32 +73,98 @@ using rocksdb::LookupKey;
  * Only apply ops greater than seqnum
  */
 
+
+/**
+ * Either in the key or value, we must retain the
+ * original sequence number and ValueType so
+ * it can be returned to the client-side rocksdb 
+ * during iteration or lookup
+ */
 struct MemKey
 {
-  std::string key;
-  SequenceNumber seqnum;
+  // Should put seq and val in the back of the string
+  // rather than front
+  std::string rep;
 
-  MemKey(SequenceNumber s, const std::string& k)
-    : key(k), seqnum(s) {}
-
-  friend std::ostream& operator << (std::ostream& os, const MemKey& m)
+  MemKey(const std::string& key, SequenceNumber seq, ValueType val)
   {
-    os << m.key << ":" << m.seqnum;
-    return os;
+    PutFixed64(&rep, seq);
+    PutFixed32(&rep, val);
+    rep.append(key);
   }
 
+  MemKey(const rocksdb::Slice& key, SequenceNumber seq, ValueType val)
+  {
+    PutFixed64(&rep, seq);
+    PutFixed32(&rep, val);
+    rep.append(key.data(), key.size());
+  }
+
+  MemKey(const Slice& s) 
+  {
+    rep.assign(s.data(), s.size());
+  }
+
+  SequenceNumber seq() const
+  {
+    Slice s(rep.data(), 8);
+    SequenceNumber ret;
+    GetFixed64(&s, &ret);
+  }
+
+  std::string userKey() const
+  {
+    return std::string(rep.data() + 8 + 4, rep.size());
+  }
+
+  ValueType val() const
+  {
+    Slice s(rep.data() + 8, 4);
+    uint32_t val;
+    GetVarint32(&s, &val);
+    return static_cast<ValueType>(val);
+  }
+
+  Slice Encode() const
+  {
+    return rep;
+  }
 };
 
-struct MemKeyCompare 
+struct MemKeyCompare : public rocksdb::Comparator 
 {
-  // which is less
-  bool operator() (const MemKey& lhs, const MemKey& rhs) const
+  virtual int Compare(const Slice& as, const Slice& bs) const override
   {
-    if (lhs.key < rhs.key) return true;
-    // keys with higher seqnum are placed earlier in scan
-    if ((lhs.key == rhs.key) && (lhs.seqnum > rhs.seqnum)) return true;
-    return false;
+    MemKey a(as);
+    MemKey b(bs);
+
+    auto akey = a.userKey();
+    auto bkey = b.userKey();
+
+    if (akey < bkey) {
+      return -1;
+    } else if (akey > bkey) {
+      return 1;
+    } else {
+      return 0;
+    }
   }
+
+  virtual const char* Name() const override
+  {
+    return "come-pair";
+  }
+
+  virtual void FindShortestSeparator(
+    std::string* start,
+    const Slice& limit) const override
+  {
+  }
+
+  virtual void FindShortSuccessor(std::string* key) const override
+  {
+  }
+
 };
 
 
@@ -114,11 +185,8 @@ struct DBWrapper {
 
   std::string identity_; // guid of upstream rocksdb instance
 
-  rocksdb::InternalKeyComparator* cmp{nullptr};
-
   ~DBWrapper() 
   {
-    delete cmp;
   }
 
   void init(bool newInstance)
@@ -128,8 +196,7 @@ struct DBWrapper {
       options.create_if_missing = true;
       options.error_if_exists = false;
     }
-    //cmp = new rocksdb::InternalKeyComparator(options.comparator);
-    //options.comparator = cmp;
+    options.comparator = new MemKeyCompare();
 
     auto s = rocksdb::DB::Open(options, kDBPath, &rocksdb_);
     assert(s.ok());
@@ -175,15 +242,18 @@ struct MapInserter : public WriteBatch::Handler {
     const Slice& key,
     const Slice& value) override
   {
-    std::cout << "inserting into cf=" << cfid 
-      << ":key=" << key.ToString()
-      << std::endl;
 
     auto cf = db_.openHandle(cfid);
 
-    //InternalKey k(key, seq_, ValueType::kTypeValue);
-    //rocksdb::Slice kSlice = k.Encode();
-    auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, key, value);
+    MemKey k(key, seq_, ValueType::kTypeValue);
+    rocksdb::Slice kSlice = k.Encode();
+
+    std::cout << "inserting into cf=" << cfid 
+      << ":key=" << key.ToString()
+      << ":slice=" << kSlice.ToString()
+      << std::endl;
+
+    auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
 
     return status;
   }
@@ -191,41 +261,47 @@ struct MapInserter : public WriteBatch::Handler {
   virtual void Put(const Slice& key,
     const Slice& value) override
   {
-    std::cout << "inserting into cf="  << kDefaultColumnFamilyIdx
+
+    MemKey k(key, seq_, ValueType::kTypeValue);
+    rocksdb::Slice kSlice = k.Encode();
+    
+    std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
+      << ":slice=" << kSlice.ToString()
       << std::endl;
 
-    //InternalKey k(key, seq_, ValueType::kTypeValue);
-    //rocksdb::Slice kSlice = k.Encode();
-    auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), key, value);
+    auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
     assert(status.ok());
   }
 
   virtual Status DeleteCF(uint32_t cfid, 
     const Slice& key)
   {
-    std::cout << "deleting from cf=" << cfid
-      << ":key=" << key.ToString()
-      << std::endl;
-
     auto cf = db_.openHandle(cfid);
 
-    //InternalKey k(key, seq_, ValueType::kTypeDeletion);
-    //rocksdb::Slice kSlice = k.Encode();
-    db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, key);
+    MemKey k(key, seq_, ValueType::kTypeDeletion);
+    rocksdb::Slice kSlice = k.Encode();
+    std::cout << "deleting from cf=" << cfid
+      << ":key=" << key.ToString()
+      << ":slice=" << kSlice.ToString()
+      << std::endl;
+
+    // delete or "insert a tombstone" here ?
+    db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, kSlice);
 
     return Status::OK();
   }
 
   virtual void Delete(const Slice& key)
   {
+
+    MemKey k(key, seq_, rocksdb::ValueType::kTypeDeletion);
+    rocksdb::Slice kSlice = k.Encode();
     std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
+      << ":slice=" << kSlice.ToString()
       << std::endl;
-
-    //InternalKey k(key, seq_, rocksdb::ValueType::kTypeDeletion);
-    //rocksdb::Slice kSlice = k.Encode();
-    db.rocksdb_->Delete(rocksdb::WriteOptions(), key);
+    db.rocksdb_->Delete(rocksdb::WriteOptions(), kSlice);
   }
 
   virtual void LogData(const Slice& blob)
@@ -303,14 +379,13 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 
   int ret = 0;
 
-  // TODO use LookupKey ?
-  //rocksdb::InternalKey internalKey(lookupKey, db.seq_, rocksdb::kValueTypeForSeek);
+  MemKey internalKey(lookupKey, db.seq_, rocksdb::kValueTypeForSeek);
 
   if (cf != nullptr)
   {
     std::string value;
-    //rocksdb::Slice kSlice = internalKey.Encode(); // internal_key ?
-    auto s = db.rocksdb_->Get(rocksdb::ReadOptions(), cf, lookupKey, &value);
+    rocksdb::Slice kSlice = internalKey.Encode(); // internal_key ?
+    auto s = db.rocksdb_->Get(rocksdb::ReadOptions(), cf, kSlice, &value);
 
     if (s.ok()) 
     {
