@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <iostream>
+#include <fstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -240,6 +241,19 @@ struct DBWrapper {
 
 DBWrapper db;
 
+#ifdef BSON_WRITER
+// code added to dump the values to find what bson looks like
+static int ctr = 0;
+static void write_bson(const std::string& value)
+{
+  std::ofstream bsonfile;
+  std::string filename = "./bson" + std::to_string(++ctr);
+  bsonfile.open(filename);
+  bsonfile << value;
+  bsonfile.close();
+}
+#endif
+
 struct MapInserter : public WriteBatch::Handler {
 
   DBWrapper& db_;
@@ -265,10 +279,12 @@ struct MapInserter : public WriteBatch::Handler {
 
     std::cout << "INSERT cf=" << cfid 
       << ":key=" << key.ToString()
-      << ":value=" << kSlice.ToString()
+      << ":value=" << value.ToString()
       << std::endl;
 
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
+
+    //write_bson(value.ToString());
 
     return status;
   }
@@ -282,10 +298,13 @@ struct MapInserter : public WriteBatch::Handler {
     
     std::cout << "INSERT cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
-      << ":value=" << kSlice.ToString()
+      << ":value=" << value.ToString()
       << std::endl;
 
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
+
+    //write_bson(value.ToString());
+
     assert(status.ok());
   }
 
@@ -298,7 +317,6 @@ struct MapInserter : public WriteBatch::Handler {
     rocksdb::Slice kSlice = k.Encode();
     std::cout << "DELETE cf=" << cfid
       << ":key=" << key.ToString()
-      << ":value=" << kSlice.ToString()
       << std::endl;
 
     // delete or "insert a tombstone" here ?
@@ -314,7 +332,6 @@ struct MapInserter : public WriteBatch::Handler {
     rocksdb::Slice kSlice = k.Encode();
     std::cout << "DELETE cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
-      << ":value=" << kSlice.ToString()
       << std::endl;
     db.rocksdb_->Delete(rocksdb::WriteOptions(), kSlice);
   }
@@ -818,6 +835,7 @@ int main(int argc, char* argv[])
     newInstance = true;
   }
   db.init(newInstance);
+
 
   int listenSocket, newSocket;
   struct sockaddr_in serverAddr;

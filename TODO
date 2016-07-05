@@ -1,6 +1,4 @@
 
-1. retain seqnum with key on repl_server
-2. support iterators
-3. wait for wal seqnum before responding to get
-4. create CF & delete CF support
-5. use unique_ptr
+1. Enable merge of results of local memtable and remote iter
+2. create CF & delete CF need sequence number
+
