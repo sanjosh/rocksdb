@@ -323,10 +323,12 @@ class ReplIterator : public InternalIterator {
 public:
   ReplIterator(ReplThreadInfo& repl_thread_info, 
     uint32_t cfid,
+    std::shared_ptr<rocksdb::Logger> info_log,
     SequenceNumber seqnum,
     const ReadOptions& read_options)
     : repl_thread_info_(repl_thread_info)
     , cfid_(cfid)
+    , logger(info_log)
     , seqnum_(seqnum)
     , read_options_(read_options)
   {
@@ -394,13 +396,17 @@ public:
         break;
       }
 
-      if (resp->status == Status::Code::kOk)
-      {
+      if ((resp->status == Status::Code::kOk) && 
+          (!resp->is_eof)) {
         remote_cursor_id_ = resp->cursor_id;
         valid_ = true;
-        key_ = "key_fixed";
-        value_ = "value_fixed";
-        internalKey_ = InternalKey(key_, 1, kTypeValue);
+        key_ = resp->kv.getKey();
+        value_ = resp->kv.getValue();
+        internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
+        Log(InfoLogLevel::INFO_LEVEL, logger, 
+          "cursor next got key=%s value=%s seq=%llu", key_, value_, resp->seq);
+      } else {
+        valid_ = false;
       }
 
     } while (0);
@@ -470,8 +476,18 @@ public:
         break;
       }
 
-      // TODO 
-      valid_ = false;
+      if ((resp->status == Status::Code::kOk) && 
+          (!resp->is_eof)) {
+        remote_cursor_id_ = resp->cursor_id;
+        valid_ = true;
+        key_ = resp->kv.getKey();
+        value_ = resp->kv.getValue();
+        internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
+        Log(InfoLogLevel::INFO_LEVEL, logger, 
+          "cursor next got key=%s value=%s seq=%llu", key_, value_, resp->seq);
+      } else {
+        valid_ = false;
+      }
 
     } while (0);
     
@@ -512,13 +528,14 @@ public:
   ReplThreadInfo& repl_thread_info_;
 
   uint32_t cfid_;
+  std::shared_ptr<rocksdb::Logger> logger = nullptr;
   SequenceNumber seqnum_;
 
-  int32_t remote_cursor_id_ = -1; // TODO create invalid 
+  int32_t remote_cursor_id_ = -1; // TODO define invalid id
 
   InternalKey internalKey_; 
-  Slice key_;
-  Slice value_;
+  std::string key_;
+  std::string value_;
   Status remoteStatus_;
 
   ReadOptions read_options_;
@@ -541,7 +558,7 @@ void ReplThreadInfo::AddIterators(uint32_t cfid,
 
   auto mem = arena->AllocateAligned(sizeof(ReplIterator));
   merge_iter_builder->AddIterator(
-    new (mem) ReplIterator(*this, cfid, seqnum, read_options));
+    new (mem) ReplIterator(*this, cfid, info_log, seqnum, read_options));
 }
 
 }

@@ -82,6 +82,12 @@ using rocksdb::GetVarint32;
  */
 struct MemKey
 {
+  // Current format
+  // SequenceNumber - 8 byte
+  // ValueType - 4 byte
+  // Length of string 
+  // Actual string
+  //
   // Should put seq and val in the back of the string
   // rather than front
   std::string rep;
@@ -107,19 +113,21 @@ struct MemKey
 
   SequenceNumber seq() const
   {
-    Slice s(rep.data(), 8);
+    Slice s(rep.data(), sizeof(uint64_t));
     SequenceNumber ret;
     GetFixed64(&s, &ret);
+    return ret;
   }
 
   std::string userKey() const
   {
-    return std::string(rep.data() + 8 + 4, rep.size());
+    return std::string(rep.data() + sizeof(uint64_t) + sizeof(uint32_t), 
+      rep.size() - (sizeof(uint64_t) + sizeof(uint32_t)));
   }
 
   ValueType val() const
   {
-    Slice s(rep.data() + 8, 4);
+    Slice s(rep.data() + sizeof(uint64_t), sizeof(uint32_t));
     uint32_t val;
     GetVarint32(&s, &val);
     return static_cast<ValueType>(val);
@@ -319,14 +327,43 @@ static constexpr int walPort = 8192;
 
 int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 {
-  std::cout << "opened cursor" << std::endl;
-
   auto iter = db.rocksdb_->NewIterator(rocksdb::ReadOptions());
-  db.openCursors_.insert(std::make_pair(db.nextCursorId_ ++, iter));
+  auto cursor_id = db.nextCursorId_ ++;
+  db.openCursors_.insert(std::make_pair(cursor_id, iter));
 
   ReplCursorOpenResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
+  std::string userKey;
+  std::string value;
+  SequenceNumber seq;
+
+  iter->SeekToFirst();
+
+  if (iter->Valid()) {
+    MemKey memkey = iter->key();
+    userKey = memkey.userKey();
+    seq = memkey.seq();
+    value = iter->value().ToString();
+    totalSz += userKey.size() + value.size();
+  } 
+
   resp = (ReplCursorOpenResp*)malloc(totalSz);
+  resp->cursor_id = cursor_id;
+  resp->status = Status::Code::kOk;
+  if (iter->Valid()) {
+    resp->kv.putKey(userKey);
+    resp->kv.putValue(value);
+    resp->seq = seq;
+    resp->is_eof = false;
+    std::cout << "open cursor id=" << resp->cursor_id 
+      << " key=" << userKey
+      << " value=" << value.substr(0, 10)
+      << " eof=" << resp->is_eof 
+      << std::endl;
+  } else {
+    resp->is_eof = true;
+  }
+
 
   int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz);
 
@@ -335,11 +372,54 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 
 int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int extraSz)
 {
-  std::cout << "next cursor" << std::endl;
 
   rocksdb::ReplCursorNextResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
+  std::string userKey;
+  std::string value;
+  SequenceNumber seq{0};
+
+  rocksdb::Iterator* iter = nullptr;
+
+  auto mapIter = db.openCursors_.find(req->cursor_id);
+  if (mapIter != db.openCursors_.end()) {
+    iter = mapIter->second;
+  }
+
+  if (iter != nullptr) {
+    iter->Next();
+  
+    if (iter->Valid()) {
+      MemKey memkey = iter->key();
+      userKey = memkey.userKey();
+      seq = memkey.seq();
+      value = iter->value().ToString();
+      totalSz += userKey.size() + value.size();
+    } 
+  }
+  
   resp = (rocksdb::ReplCursorNextResp*)malloc(totalSz);
+  resp->cursor_id = req->cursor_id;
+  if (!iter) {
+    resp->is_eof = true;
+    resp->status = Status::Code::kNotFound;
+  } else if (iter->Valid()) {
+    resp->status = Status::Code::kOk;
+    resp->kv.putKey(userKey);
+    resp->kv.putValue(value);
+    resp->is_eof = false;
+    resp->seq = seq;
+    std::cout << "next cursor id=" << resp->cursor_id 
+      << " key=" << userKey
+      << " value=" << value.substr(0, 10)
+      << " seq=" << seq
+      << " eof=" << resp->is_eof 
+      << std::endl;
+  } else {
+    resp->status = Status::Code::kOk;
+    resp->is_eof = true;
+    std::cout << "next cursor id=" << resp->cursor_id  << " eof" << std::endl;
+  }
 
   int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
 
@@ -348,11 +428,20 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
 
 int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int extraSz)
 {
-  std::cout << "close cursor" << std::endl;
-
   rocksdb::ReplCursorCloseResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
   resp = (rocksdb::ReplCursorCloseResp*)malloc(totalSz);
+
+  auto mapIter = db.openCursors_.find(req->cursor_id);
+  if (mapIter != db.openCursors_.end()) {
+    delete mapIter->second;
+    resp->status = Status::kOk;
+  } else {
+    resp->status = Status::kNotFound;
+  }
+  resp->cursor_id = req->cursor_id;
+
+  std::cout << "close cursor id=" << resp->cursor_id << std::endl;
 
   int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz);
 

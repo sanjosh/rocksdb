@@ -69,7 +69,7 @@ int main() {
   for (iter->SeekToFirst(); iter->Valid(); iter->Next())
   {
     std::cout 
-      << "key=" << iter->key().ToString()
+      << "Cursor key=" << std::hex << iter->key().ToString() << std::dec
       << " value=" << iter->value().ToString().substr(0, 10)
       << std::endl;
   }
