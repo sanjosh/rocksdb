@@ -224,8 +224,12 @@ struct DBWrapper {
         std::to_string(cfid), &cfptr);
       if (status.ok()) {
         handles_.insert(std::make_pair(cfid, cfptr));
+        std::cout << " thread=" << std::this_thread::get_id() 
+          << " create CF= " << cfid 
+          << " seq=" << seq_ << std::endl;
       } else {
-        std::cerr << "failed to create cf= " << cfid;
+        std::cout << "thread=" << std::this_thread::get_id() 
+          << " failed to create CF= " << cfid << std::endl;
       }
     }
     cfptr = iter->second;
@@ -259,9 +263,9 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
 
-    std::cout << "inserting into cf=" << cfid 
+    std::cout << "INSERT cf=" << cfid 
       << ":key=" << key.ToString()
-      << ":slice=" << kSlice.ToString()
+      << ":value=" << kSlice.ToString()
       << std::endl;
 
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
@@ -276,9 +280,9 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
     
-    std::cout << "inserting into cf="  << kDefaultColumnFamilyIdx
+    std::cout << "INSERT cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
-      << ":slice=" << kSlice.ToString()
+      << ":value=" << kSlice.ToString()
       << std::endl;
 
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
@@ -292,9 +296,9 @@ struct MapInserter : public WriteBatch::Handler {
 
     MemKey k(key, seq_++, ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
-    std::cout << "deleting from cf=" << cfid
+    std::cout << "DELETE cf=" << cfid
       << ":key=" << key.ToString()
-      << ":slice=" << kSlice.ToString()
+      << ":value=" << kSlice.ToString()
       << std::endl;
 
     // delete or "insert a tombstone" here ?
@@ -308,9 +312,9 @@ struct MapInserter : public WriteBatch::Handler {
 
     MemKey k(key, seq_++, rocksdb::ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
-    std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
+    std::cout << "DELETE cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
-      << ":slice=" << kSlice.ToString()
+      << ":value=" << kSlice.ToString()
       << std::endl;
     db.rocksdb_->Delete(rocksdb::WriteOptions(), kSlice);
   }
@@ -331,8 +335,8 @@ static constexpr int walPort = 8192;
 int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 {
   auto iter = db.rocksdb_->NewIterator(rocksdb::ReadOptions());
-  auto cursor_id = db.nextCursorId_ ++;
-  db.openCursors_.insert(std::make_pair(cursor_id, iter));
+  auto local_cursor_id = ++ db.nextCursorId_;
+  db.openCursors_.insert(std::make_pair(local_cursor_id, iter));
 
   ReplCursorOpenResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
@@ -351,22 +355,23 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   } 
 
   resp = (ReplCursorOpenResp*)malloc(totalSz);
-  resp->cursor_id = cursor_id;
+  resp->cursor_id = local_cursor_id;
   resp->status = Status::Code::kOk;
   if (iter->Valid()) {
     resp->kv.putKey(userKey);
     resp->kv.putValue(value);
     resp->seq = seq;
     resp->is_eof = false;
-    std::cout << "open cursor id=" << resp->cursor_id 
+    std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " key=" << userKey
       << " value=" << value.substr(0, 10)
       << " eof=" << resp->is_eof 
       << std::endl;
   } else {
     resp->is_eof = true;
+    std::cout << "OPENCURSOR id=" << resp->cursor_id 
+      << " eof=" << resp->is_eof << std::endl;
   }
-
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz);
 
@@ -406,13 +411,14 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
   if (!iter) {
     resp->is_eof = true;
     resp->status = Status::Code::kNotFound;
+    std::cout << "NEXTCURSOR id=" << resp->cursor_id  << " not found" << std::endl;
   } else if (iter->Valid()) {
     resp->status = Status::Code::kOk;
     resp->kv.putKey(userKey);
     resp->kv.putValue(value);
     resp->is_eof = false;
     resp->seq = seq;
-    std::cout << "next cursor id=" << resp->cursor_id 
+    std::cout << "NEXTCURSOR id=" << resp->cursor_id 
       << " key=" << userKey
       << " value=" << value.substr(0, 10)
       << " seq=" << seq
@@ -421,7 +427,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
   } else {
     resp->status = Status::Code::kOk;
     resp->is_eof = true;
-    std::cout << "next cursor id=" << resp->cursor_id  << " eof" << std::endl;
+    std::cout << "NEXTCURSOR id=" << resp->cursor_id  << " eof" << std::endl;
   }
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
@@ -444,7 +450,7 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   }
   resp->cursor_id = req->cursor_id;
 
-  std::cout << "close cursor id=" << resp->cursor_id << std::endl;
+  std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz);
 
@@ -456,6 +462,7 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
   std::string lookupKey(req->key, extraSz);
   uint32_t cfid = req->cfid;
 
+  /*
   std::cout 
     << "read from ReadSocket size=" << extraSz
     << ":cfid=" << cfid
@@ -463,6 +470,7 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
     << ":db map size=" << db.handles_.size()
     << ":seq=" << req->seq
     << std::endl;
+    */
 
   ReplLookupResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
@@ -473,7 +481,16 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
     sleep(10);
   }
 
-  auto cf = db.openHandle(cfid);
+  rocksdb::ColumnFamilyHandle* cf{nullptr};
+
+  do {
+    // TODO hack to remove
+    // need to find more reliable way to propagate Schema creation/deletion
+    cf = db.openHandle(cfid);
+    if (cf == nullptr) {
+      sleep(1);
+    }
+  } while (cf == nullptr);
 
   int ret = 0;
 
@@ -487,7 +504,9 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 
     if (s.ok()) 
     {
-      std::cout << "found value=" << value.substr(0, 10) << " for key=" << lookupKey << std::endl;
+      std::cout << "GET cf=" << cfid 
+        << " found value=" << value.substr(0, 10) << " key=" << lookupKey 
+        << std::endl;
 
       totalSz += value.size();
       resp = (ReplLookupResp*)malloc(totalSz);
@@ -501,14 +520,16 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
       resp = (ReplLookupResp*)malloc(totalSz);
       resp->found = false;
       resp->status = Status::Code::kOk;
-      std::cout << "not finding key=" << lookupKey << std::endl;
+      std::cout << "GET cf=" << cfid 
+        << " not found key=" << lookupKey 
+        << std::endl;
     }
   } 
   else 
   {
     resp = (ReplLookupResp*)malloc(totalSz);
     resp->status = Status::Code::kInvalidArgument;
-    std::cout << "not found cf=" << cfid << std::endl;
+    std::cout << "GET FATAL not found cf=" << cfid << std::endl;
   }
 
   sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz);
@@ -527,11 +548,13 @@ int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
   // set contents of batch using Slice
   rocksdb::WriteBatchInternal::SetContents(&batch, slice);
 
+  /*
   std::cout << "Got a WriteBatch"
     << " seq=" << req->seq
     << ":size=" << batch.GetDataSize()
     << ":num updates in batch=" << batch.Count()
     << std::endl;
+    */
 
   MapInserter handler(req->seq, db);
   batch.Iterate(&handler);

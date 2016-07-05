@@ -400,6 +400,8 @@ public:
 
       err = t->readSock.writeSocket(OP_CURSOR_OPEN, oc, totalSz);
       if (err < 0) {
+        Log(InfoLogLevel::ERROR_LEVEL, logger, 
+          "cursor write got error err=%d", err);
         break;
       }
 
@@ -408,18 +410,21 @@ public:
 
       err = t->readSock.readSocket(op, (void**)&resp, readSz);
       if (op != RESP_CURSOR_OPEN || err < 0) {
+        Log(InfoLogLevel::ERROR_LEVEL, logger, 
+          "cursor read got error err=%d", err);
         break;
       }
 
+      remote_cursor_id_ = resp->cursor_id;
+
       if ((resp->status == Status::Code::kOk) && 
           (!resp->is_eof)) {
-        remote_cursor_id_ = resp->cursor_id;
         valid_ = true;
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
         internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
         Log(InfoLogLevel::INFO_LEVEL, logger, 
-          "cursor next got key=%s value=%s seq=%llu", key_, value_, resp->seq);
+          "cursor seek got key=%s value=%s seq=%llu", key_, value_, resp->seq);
       } else {
         valid_ = false;
       }
@@ -493,7 +498,6 @@ public:
 
       if ((resp->status == Status::Code::kOk) && 
           (!resp->is_eof)) {
-        remote_cursor_id_ = resp->cursor_id;
         valid_ = true;
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
