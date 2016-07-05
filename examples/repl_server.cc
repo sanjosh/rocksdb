@@ -802,6 +802,19 @@ int main(int argc, char* argv[])
   socklen_t addr_size;
 
   listenSocket = socket(PF_INET, SOCK_STREAM, 0);
+
+  int enable = 1;
+  if (setsockopt(listenSocket, SOL_SOCKET, 
+      SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+    perror("setsockopt(SO_REUSEADDR) failed");
+    exit(1);
+  }
+
+  if (setsockopt(listenSocket, SOL_SOCKET, 
+      SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+    perror("setsockopt(SO_REUSEPORT) failed");
+    exit(1);
+  }
   
   serverAddr.sin_family = AF_INET;
   serverAddr.sin_port = htons(walPort);

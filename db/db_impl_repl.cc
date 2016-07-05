@@ -227,11 +227,11 @@ void ReplThreadInfo::walUpdater()
       if (!stop.load(std::memory_order_acquire)) {
         break;
       }
-      sleep(60);
+      sleep(1);
     }
       
     if (iter.get() == nullptr) {
-      Env::Default()->SleepForMicroseconds(60 * 1000); // TODO cond var
+      Env::Default()->SleepForMicroseconds(1000); // TODO cond var
       continue;
     }
 

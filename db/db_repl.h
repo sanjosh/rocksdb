@@ -83,7 +83,7 @@ struct ReplThreadInfo {
   // TODO remove mutex and put in smarter socket multiplexing 
   ReplSocket readSock;
 
-  SequenceNumber lastReplSequence;
+  SequenceNumber lastReplSequence{0};
 
   void walUpdater();
 
