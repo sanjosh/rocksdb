@@ -214,6 +214,7 @@ struct DBWrapper {
     // TODO need to open all existing cf if not new instance
   }
 
+  // TODO do schema ops when u get createCF/deleteCF blobs in WAL
   rocksdb::ColumnFamilyHandle* openHandle(uint32_t cfid)
   {
     rocksdb::ColumnFamilyHandle* cfptr{nullptr};
@@ -238,6 +239,8 @@ DBWrapper db;
 struct MapInserter : public WriteBatch::Handler {
 
   DBWrapper& db_;
+  // Sequence number must be incremented by every op
+  // in batch, bcos thats what client-side rocksdb does
   SequenceNumber seq_;
 
   MapInserter() = delete;
@@ -253,7 +256,7 @@ struct MapInserter : public WriteBatch::Handler {
 
     auto cf = db_.openHandle(cfid);
 
-    MemKey k(key, seq_, ValueType::kTypeValue);
+    MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
 
     std::cout << "inserting into cf=" << cfid 
@@ -270,10 +273,10 @@ struct MapInserter : public WriteBatch::Handler {
     const Slice& value) override
   {
 
-    MemKey k(key, seq_, ValueType::kTypeValue);
+    MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
     
-    std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
+    std::cout << "inserting into cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
       << ":slice=" << kSlice.ToString()
       << std::endl;
@@ -287,7 +290,7 @@ struct MapInserter : public WriteBatch::Handler {
   {
     auto cf = db_.openHandle(cfid);
 
-    MemKey k(key, seq_, ValueType::kTypeDeletion);
+    MemKey k(key, seq_++, ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
     std::cout << "deleting from cf=" << cfid
       << ":key=" << key.ToString()
@@ -303,7 +306,7 @@ struct MapInserter : public WriteBatch::Handler {
   virtual void Delete(const Slice& key)
   {
 
-    MemKey k(key, seq_, rocksdb::ValueType::kTypeDeletion);
+    MemKey k(key, seq_++, rocksdb::ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
     std::cout << "deleting from cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
@@ -365,7 +368,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   }
 
 
-  int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz);
 
   return err;
 }
@@ -421,7 +424,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     std::cout << "next cursor id=" << resp->cursor_id  << " eof" << std::endl;
   }
 
-  int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
 
   return err;
 }
@@ -443,7 +446,7 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
 
   std::cout << "close cursor id=" << resp->cursor_id << std::endl;
 
-  int err = sock.writeSock(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz);
 
   return err;
 }
@@ -463,6 +466,12 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 
   ReplLookupResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
+
+  while (db.seq_ < req->seq) {
+    std::cout << "waiting for wal seq=" << db.seq_
+      << " to reach lookup seq=" << req->seq << std::endl;
+    sleep(10);
+  }
 
   auto cf = db.openHandle(cfid);
 
@@ -502,7 +511,7 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
     std::cout << "not found cf=" << cfid << std::endl;
   }
 
-  sock.writeSock(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz);
+  sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz);
 
   free(resp);
 
@@ -527,7 +536,8 @@ int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
   MapInserter handler(req->seq, db);
   batch.Iterate(&handler);
 
-  db.seq_ = req->seq;
+  // Update db sequence number
+  db.seq_ = req->seq + batch.Count();
 
   return ret;
 }
@@ -648,7 +658,7 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
 
-  sock.writeSock(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz);
+  sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz);
 
   free(resp);
 
@@ -662,13 +672,15 @@ void serverWorker(int sockfd)
 
   ReplSocket sock(sockfd);
 
+  std::cout << "started work on socket=" << sockfd << std::endl;
+
   while (!eof) 
   {
     void* void_req;
     ReplResponseOp op;
     ssize_t returnSz;
 
-    int err = sock.readSock(op, &void_req, returnSz);
+    int err = sock.readSocket(op, &void_req, returnSz);
     if (err < 0) {
       eof = true;
       break;
@@ -796,16 +808,22 @@ int main(int argc, char* argv[])
   serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
   memset(serverAddr.sin_zero, '\0', sizeof serverAddr.sin_zero);  
 
-  bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
+  auto ret = bind(listenSocket, (struct sockaddr *) &serverAddr, sizeof(serverAddr));
+  if (ret != 0) {
+    perror("bind failed");
+    exit(1);
+  }
 
   if(listen(listenSocket,5)==0)
     printf("Listening on %d\n", walPort);
   else {
-    printf("Error\n");
+    perror("listen failed");
     exit(1);
   }
 
   addr_size = sizeof (serverStorage);
+
+  std::vector<std::future<void>> futVec;
 
   while (1) {
 
@@ -814,7 +832,11 @@ int main(int argc, char* argv[])
   
     auto fut = std::async(std::launch::async,
       serverWorker, newSocket);
+
+    futVec.emplace_back(std::move(fut));
   }
+
+  // TODO wait on futVec
 
   close(listenSocket);
 

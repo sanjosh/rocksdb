@@ -55,9 +55,9 @@ struct ReplSocket
   int connect(const std::string& in_addr, int in_port,
       std::shared_ptr<rocksdb::Logger> in_logger);
 
-  int writeSock(ReplRequestOp op, const void* data, const size_t totalSz);
+  int writeSocket(ReplRequestOp op, const void* data, const size_t totalSz);
 
-  int readSock(ReplResponseOp& op, void** data, ssize_t &returnSz);
+  int readSocket(ReplResponseOp& op, void** data, ssize_t &returnSz);
 
   explicit ReplSocket();
 
@@ -75,7 +75,13 @@ struct ReplThreadInfo {
   std::atomic<bool> has_stopped;
   std::atomic<bool> started;
 
-  ReplSocket sock;
+  // writeSock is where all wal updates are written
+  ReplSocket writeSock;
+  // Introduced read socket because currently there
+  // is a mutex used to guarantee exclusive use of
+  // socket to every operation.  This caused a deadlock
+  // TODO remove mutex and put in smarter socket multiplexing 
+  ReplSocket readSock;
 
   SequenceNumber lastReplSequence;
 
@@ -100,7 +106,7 @@ struct ReplThreadInfo {
 
   bool IsReplicated() const
   {
-    return (sock.sock_fd != -1);
+    return ((writeSock.sock_fd != -1) && (readSock.sock_fd != -1));
   }
 };
 

@@ -45,7 +45,7 @@ int main() {
   for (int i = 0; i < NumKeys; i++) 
   {
     std::string key = "key_" + std::to_string(i);
-    std::string value(4096, 'a');
+    std::string value(4096, 'a' + i);
     s = db->Put(WriteOptions(), key, value);
     assert(s.ok());
   }
