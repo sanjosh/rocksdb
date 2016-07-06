@@ -219,9 +219,11 @@ void ReplThreadInfo::walUpdater()
   while (!stop.load(std::memory_order_acquire)) {
       
     iter.reset();
+    /*
     Log(InfoLogLevel::INFO_LEVEL, logger, 
       "Repl thread asking for logs from seq=%llu",
       lastReplSequence + 1);
+      */
         
     while (!db->GetUpdatesSince(lastReplSequence + 1, &iter).ok()) {
       if (!stop.load(std::memory_order_acquire)) {
@@ -423,11 +425,13 @@ public:
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
         internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
-        Log(InfoLogLevel::INFO_LEVEL, logger, 
-          "cursor seek got key=%s value=%s seq=%llu", key_, value_, resp->seq);
       } else {
         valid_ = false;
       }
+
+      Log(InfoLogLevel::INFO_LEVEL, logger, 
+          "cursor seek got cfid=%d valid=%d key=%s value=%s seq=%llu", 
+          cfid_, valid_, key_, value_, resp->seq);
 
     } while (0);
 
@@ -502,11 +506,12 @@ public:
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
         internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
-        Log(InfoLogLevel::INFO_LEVEL, logger, 
-          "cursor next got key=%s value=%s seq=%llu", key_, value_, resp->seq);
       } else {
         valid_ = false;
       }
+      Log(InfoLogLevel::INFO_LEVEL, logger, 
+          "cursor next got cfid=%d valid=%d key=%s value=%s seq=%llu", 
+          cfid_, valid_, key_, value_, resp->seq);
 
     } while (0);
     
