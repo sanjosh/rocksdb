@@ -7,3 +7,5 @@
 6. performance tests
 7. myrocks (mysql)
 
+8. add sequence number to blob
+9. getUpdatesSince() wal read must be blocking
