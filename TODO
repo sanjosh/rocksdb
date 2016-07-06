@@ -1,11 +1,34 @@
 
-1. Enable merge of results of local memtable and remote iter
-2. create CF & delete CF need sequence number
-3. repl thread - use condition variable, mutex
-4. fetch multiple from remote iterator
-5. correctness tests
-6. performance tests
-7. myrocks (mysql)
+Iterator
+* Enable merge of results of local memtable and remote iter
+* Seek backward, use of keys, other options
+* fetch multiple from remote iterator
 
-8. add sequence number to blob
-9. getUpdatesSince() wal read must be blocking
+============================
+
+Schema 
+* create CF & delete CF need sequence number
+============================
+
+WAL update
+* getUpdatesSince() wal read must be blocking
+* have one repl thread for all dbs 
+============================
+
+RPC
+* use apache thrift 
+
+============================
+MySQL
+* separate column family
+
+============================
+Tests
+* correctness tests
+* performance tests
+
+============================
+Operational issues
+* Config, reuse current op tools
+
+============================
