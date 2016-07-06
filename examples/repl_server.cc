@@ -241,18 +241,18 @@ struct DBWrapper {
 
 DBWrapper db;
 
-#ifdef BSON_WRITER
 // code added to dump the values to find what bson looks like
 static int ctr = 0;
 static void write_bson(const std::string& value)
 {
+#ifdef BSON_WRITER
   std::ofstream bsonfile;
   std::string filename = "./bson" + std::to_string(++ctr);
   bsonfile.open(filename);
   bsonfile << value;
   bsonfile.close();
-}
 #endif
+}
 
 struct MapInserter : public WriteBatch::Handler {
 
@@ -284,7 +284,7 @@ struct MapInserter : public WriteBatch::Handler {
 
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
 
-    //write_bson(value.ToString());
+    write_bson(value.ToString());
 
     return status;
   }
@@ -303,7 +303,7 @@ struct MapInserter : public WriteBatch::Handler {
 
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
 
-    //write_bson(value.ToString());
+    write_bson(value.ToString());
 
     assert(status.ok());
   }
@@ -351,7 +351,15 @@ static constexpr int walPort = 8192;
 
 int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 {
-  auto iter = db.rocksdb_->NewIterator(rocksdb::ReadOptions());
+  rocksdb::ColumnFamilyHandle* cf {nullptr};
+  do {
+    cf = db.openHandle(req->cfid);
+    if (cf == nullptr) {
+      usleep(1000);
+    }
+  } while (cf == nullptr); 
+
+  auto iter = db.rocksdb_->NewIterator(rocksdb::ReadOptions(), cf);
   auto local_cursor_id = ++ db.nextCursorId_;
   db.openCursors_.insert(std::make_pair(local_cursor_id, iter));
 
@@ -361,7 +369,13 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   std::string value;
   SequenceNumber seq;
 
-  iter->SeekToFirst();
+  std::string seekKey;
+  if (extraSz) {
+    seekKey = std::string(req->buf, extraSz);
+    iter->Seek(seekKey);
+  } else {
+    iter->SeekToFirst();
+  }
 
   if (iter->Valid()) {
     MemKey memkey = iter->key();
@@ -380,13 +394,16 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
     resp->seq = seq;
     resp->is_eof = false;
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
+      << " cfid=" << req->cfid
       << " key=" << userKey
       << " value=" << value.substr(0, 10)
+      << " seek_key=" << seekKey
       << " eof=" << resp->is_eof 
       << std::endl;
   } else {
     resp->is_eof = true;
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
+      << " cfid=" << req->cfid
       << " eof=" << resp->is_eof << std::endl;
   }
 
@@ -428,7 +445,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
   if (!iter) {
     resp->is_eof = true;
     resp->status = Status::Code::kNotFound;
-    std::cout << "NEXTCURSOR id=" << resp->cursor_id  << " not found" << std::endl;
+    std::cout << "NEXTCURSOR id=" << resp->cursor_id << " not found" << std::endl;
   } else if (iter->Valid()) {
     resp->status = Status::Code::kOk;
     resp->kv.putKey(userKey);
@@ -461,6 +478,7 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   auto mapIter = db.openCursors_.find(req->cursor_id);
   if (mapIter != db.openCursors_.end()) {
     delete mapIter->second;
+    db.openCursors_.erase(mapIter);
     resp->status = Status::kOk;
   } else {
     resp->status = Status::kNotFound;

@@ -110,6 +110,50 @@ struct ReplThreadInfo {
   }
 };
 
+struct KeyValue
+{
+  uint32_t key_size{0};
+  uint32_t value_size{0};
+  char buf[0];
+
+  static KeyValue* create(uint32_t key_size, uint32_t value_size)
+  {
+    KeyValue* kv = reinterpret_cast<KeyValue*>(malloc(key_size + value_size + sizeof(KeyValue)));
+    kv->key_size = key_size;
+    kv->value_size = value_size;
+    return kv;
+  }
+
+  static void destroy(KeyValue* kv)
+  {
+    free(kv);
+  }
+
+  std::string getKey() const
+  {
+    std::string s(buf, key_size);
+    return s;
+  }
+
+  std::string getValue() const
+  {
+    std::string s(buf + key_size, value_size);
+    return s;
+  }
+
+  void putKey(const Slice& key)
+  {
+    key_size = key.size();
+    memcpy(buf, key.data(), key_size);
+  }
+
+  void putValue(const Slice& value)
+  {
+    value_size = value.size();
+    memcpy(buf + key_size, value.data(), value_size);
+  }
+};
+
 struct ReplRequestHeader
 {
   ReplRequestOp op;
@@ -176,49 +220,6 @@ struct ReplCursorOpenReq
   }
 };
 
-struct KeyValue
-{
-  uint32_t key_size{0};
-  uint32_t value_size{0};
-  char buf[0];
-
-  static KeyValue* create(uint32_t key_size, uint32_t value_size)
-  {
-    KeyValue* kv = reinterpret_cast<KeyValue*>(malloc(key_size + value_size + sizeof(KeyValue)));
-    kv->key_size = key_size;
-    kv->value_size = value_size;
-    return kv;
-  }
-
-  static void destroy(KeyValue* kv)
-  {
-    free(kv);
-  }
-
-  std::string getKey() const
-  {
-    std::string s(buf, key_size);
-    return s;
-  }
-
-  std::string getValue() const
-  {
-    std::string s(buf + key_size, value_size);
-    return s;
-  }
-
-  void putKey(const Slice& key)
-  {
-    key_size = key.size();
-    memcpy(buf, key.data(), key_size);
-  }
-
-  void putValue(const Slice& value)
-  {
-    value_size = value.size();
-    memcpy(buf + key_size, value.data(), value_size);
-  }
-};
 
 struct ReplCursorOpenResp
 {
