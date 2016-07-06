@@ -1,4 +1,9 @@
 
 1. Enable merge of results of local memtable and remote iter
 2. create CF & delete CF need sequence number
+3. repl thread - use condition variable, mutex
+4. fetch multiple from remote iterator
+5. correctness tests
+6. performance tests
+7. myrocks (mysql)
 
