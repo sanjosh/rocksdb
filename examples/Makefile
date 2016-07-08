@@ -2,6 +2,8 @@ include ../make_config.mk
 
 .PHONY: clean librocksdb
 
+# SANITIZER, add -fsanitize=address
+
 #all: repl_server repl_example repl_column_families simple_example column_families_example compact_files_example c_simple_example optimistic_transaction_example transaction_example
 all: repl_server repl_example 
 

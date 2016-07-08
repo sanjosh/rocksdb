@@ -65,8 +65,13 @@ int main() {
 
   waitForUser();
 
-  auto iter = db->NewIterator(rocksdb::ReadOptions());
-  for (iter->SeekToFirst(); iter->Valid(); iter->Next())
+  auto snap = db->GetSnapshot();
+  rocksdb::ReadOptions read_options;
+  read_options.snapshot = snap;
+
+  auto iter = db->NewIterator(read_options);
+  std::string seekKey = "key_3";
+  for (iter->Seek(seekKey); iter->Valid(); iter->Next())
   {
     std::cout 
       << "Cursor key=" << std::hex << iter->key().ToString() << std::dec
@@ -74,6 +79,7 @@ int main() {
       << std::endl;
   }
   delete iter;
+  db->ReleaseSnapshot(snap);
 
   waitForUser();
 

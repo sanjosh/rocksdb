@@ -424,14 +424,15 @@ public:
         valid_ = true;
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
-        internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
+        ParsedInternalKey pkey(key_, resp->seq, kTypeValue);
+        internalKey_.SetFrom(pkey);
       } else {
         valid_ = false;
       }
 
       Log(InfoLogLevel::INFO_LEVEL, logger, 
           "cursor seek got cfid=%d valid=%d key=%s value=%s seq=%llu", 
-          cfid_, valid_, key_, value_, resp->seq);
+          cfid_, valid_, key_.c_str(), value_.c_str(), resp->seq);
 
     } while (0);
 
@@ -505,13 +506,14 @@ public:
         valid_ = true;
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
-        internalKey_ = InternalKey(key_, resp->seq, kTypeValue);
+        ParsedInternalKey pkey(key_, resp->seq, kTypeValue);
+        internalKey_.SetFrom(pkey);
       } else {
         valid_ = false;
       }
       Log(InfoLogLevel::INFO_LEVEL, logger, 
           "cursor next got cfid=%d valid=%d key=%s value=%s seq=%llu", 
-          cfid_, valid_, key_, value_, resp->seq);
+          cfid_, valid_, key_.c_str(), value_.c_str(), resp->seq);
 
     } while (0);
     
@@ -544,7 +546,8 @@ public:
   }
   virtual bool IsKeyPinned() const override
   {
-    return true;
+    // if true, then DBIter::saved_key_ doesn't make a copy
+    return false;
   }
 
   private:
@@ -576,7 +579,11 @@ void ReplThreadInfo::AddIterators(uint32_t cfid,
   const EnvOptions& soptions,
   MergeIteratorBuilder* merge_iter_builder) {
 
-  SequenceNumber seqnum = 0; // TODO retrieve based on snapshot
+  SequenceNumber seqnum = 0; // TODO retrieve based on cur seq
+
+  if (read_options.snapshot) {
+    seqnum = read_options.snapshot->GetSequenceNumber();
+  }
 
   auto* arena = merge_iter_builder->GetArena();
 

@@ -83,6 +83,7 @@ endif
 
 # compile with -O2 if debug level is not 2
 ifneq ($(DEBUG_LEVEL), 2)
+#OPT += -fno-omit-frame-pointer
 OPT += -O2 -fno-omit-frame-pointer
 # Skip for archs that don't support -momit-leaf-frame-pointer
 ifeq (,$(shell $(CXX) -fsyntax-only -momit-leaf-frame-pointer -xc /dev/null 2>&1))
@@ -411,6 +412,7 @@ $(SHARED3): $(SHARED4)
 	ln -fs $(SHARED4) $(SHARED3)
 endif
 
+# SANITIZER - add -fsanitize=address here
 $(SHARED4):
 	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(LIB_SOURCES) $(TOOL_SOURCES) \
 		$(LDFLAGS) -o $@
