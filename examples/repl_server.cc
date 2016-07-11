@@ -150,9 +150,10 @@ struct MemKeyCompare : public rocksdb::Comparator
     auto akey = a.userKey();
     auto bkey = b.userKey();
 
-    if (akey < bkey) {
+    int cmp = akey.compare(bkey);
+    if (cmp < 0) {
       return -1;
-    } else if (akey > bkey) {
+    } else if (cmp > 0) {
       return 1;
     } else {
       return 0;
@@ -161,7 +162,7 @@ struct MemKeyCompare : public rocksdb::Comparator
 
   virtual const char* Name() const override
   {
-    return "come-pair";
+    return "repl-rocks";
   }
 
   virtual void FindShortestSeparator(
@@ -221,7 +222,10 @@ struct DBWrapper {
     rocksdb::ColumnFamilyHandle* cfptr{nullptr};
     auto iter = handles_.find(cfid);
     if (iter == handles_.end()) {
-      auto status = rocksdb_->CreateColumnFamily(rocksdb::ColumnFamilyOptions(),
+      rocksdb::ColumnFamilyOptions column_family_options;
+      column_family_options.comparator = new MemKeyCompare();
+
+      auto status = rocksdb_->CreateColumnFamily(column_family_options,
         std::to_string(cfid), &cfptr);
       if (status.ok()) {
         handles_.insert(std::make_pair(cfid, cfptr));
