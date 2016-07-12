@@ -41,12 +41,14 @@ int main() {
   Status s = DB::Open(options, kDBPath, &db);
   assert(s.ok());
 
+  rocksdb::WriteOptions writeOpt;
+  writeOpt.sync = true;
   // Put key-value
   for (int i = 0; i < NumKeys; i++) 
   {
     std::string key = "key_" + std::to_string(i);
     std::string value(4096, 'a' + i);
-    s = db->Put(WriteOptions(), key, value);
+    s = db->Put(writeOpt, key, value);
     assert(s.ok());
   }
 
@@ -89,7 +91,7 @@ int main() {
       std::string key = "key_" + std::to_string(i);
       batch.Delete(key);
     }
-    s = db->Write(WriteOptions(), &batch);
+    s = db->Write(writeOpt, &batch);
     assert(s.ok());
   }
   

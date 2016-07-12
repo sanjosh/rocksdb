@@ -4550,6 +4550,9 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
 
       Slice log_entry = WriteBatchInternal::Contents(merged_batch);
       status = logs_.back().writer->AddRecord(log_entry);
+      if (status.ok()) {
+        status = repl_thread_info_.AddToReplLog(*merged_batch);
+      }
       total_log_size_ += log_entry.size();
       alive_log_files_.back().AddSize(log_entry.size());
       log_empty_ = false;
@@ -4570,6 +4573,9 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
           if (!status.ok()) {
             break;
           }
+        }
+        if (status.ok()) {
+          repl_thread_info_.FlushReplLog();
         }
         if (status.ok() && need_log_dir_sync) {
           // We only sync WAL directory the first time WAL syncing is
@@ -5669,9 +5675,12 @@ Status DB::Open(const DBOptions& db_options, const std::string& dbname,
       impl->db_options_.repl_addr,
       impl->db_options_.repl_port);
 
+    (void) replRet;
+    /*
     if (replRet == 0) {
       impl->env_->StartThread(DBImpl::ReplThreadBody, &impl->repl_thread_info_);
     }
+    */
   }
 
   if (s.ok()) {

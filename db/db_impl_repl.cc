@@ -279,6 +279,50 @@ void ReplThreadInfo::walUpdater()
   Log(InfoLogLevel::INFO_LEVEL, logger, "Repl thread exiting");
 }
 
+Status ReplThreadInfo::AddToReplLog(WriteBatch& newBatch)
+{
+  Slice s = WriteBatchInternal::Contents(&newBatch);
+  replLogList.push_back(s.ToString());
+  return Status::OK();
+}
+
+Status ReplThreadInfo::FlushReplLog()
+{
+  auto& logger = info_log;
+
+  for (auto& elem : replLogList)
+  {
+    WriteBatch batch(elem);
+    Slice s = WriteBatchInternal::Contents(&batch);
+    auto seq = WriteBatchInternal::Sequence(&batch);
+
+    ssize_t totalSz = sizeof(ReplWALUpdate) + batch.GetDataSize();
+
+    // TODO : combine into an operator new + ctor
+    ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
+    memcpy(sw->buf, s.data(), s.size());
+    sw->seq = seq;
+
+    int err = writeSock.writeSocket(OP_WAL, sw, totalSz);
+    (void)err;
+
+    free(sw);
+
+    lastReplSequence = seq + batch.Count() - 1; 
+
+    Log(InfoLogLevel::INFO_LEVEL, logger, 
+      "Repl thread sent seq=%llu actual batch=%lu numUpd=%d ", 
+      lastReplSequence,
+      elem.size(),
+      batch.Count()
+      );
+  }
+
+  replLogList.clear();
+
+  return Status::OK();
+}
+
 void DBImpl::ReplThreadBody(void* arg)
 {
   ReplThreadInfo* t = reinterpret_cast<ReplThreadInfo*>(arg);

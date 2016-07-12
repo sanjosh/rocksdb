@@ -4,6 +4,7 @@
 #include "rocksdb/status.h"
 #include <string>
 #include <atomic>
+#include <list>
 
 namespace rocksdb {
 
@@ -85,7 +86,13 @@ struct ReplThreadInfo {
 
   SequenceNumber lastReplSequence{0};
 
+  std::list<std::string> replLogList;
+
   void walUpdater();
+
+  // for synchronous commit
+  Status AddToReplLog(WriteBatch& newBatch);
+  Status FlushReplLog();
 
   int initialize(const std::string& guid,
       SequenceNumber lastSequence,
@@ -98,6 +105,7 @@ struct ReplThreadInfo {
     SequenceNumber snapshot, 
     std::string* value,
     bool* value_found = nullptr);
+
 
   void AddIterators(uint32_t cfid,
     const ReadOptions& read_options,
