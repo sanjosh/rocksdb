@@ -437,6 +437,13 @@ public:
   {
     ReplThreadInfo* t = &repl_thread_info_;
 
+    if (remote_cursor_id_ != -1) {
+      Log(InfoLogLevel::ERROR_LEVEL, logger, 
+        "cursor already open=%d", remote_cursor_id_);
+      valid_ = false;
+      return -1;
+    }
+
     int err = 0;
     ReplCursorOpenResp* resp{nullptr};
 

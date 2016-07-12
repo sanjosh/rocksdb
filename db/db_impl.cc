@@ -4574,15 +4574,18 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
             break;
           }
         }
-        if (status.ok()) {
-          repl_thread_info_.FlushReplLog();
-        }
         if (status.ok() && need_log_dir_sync) {
           // We only sync WAL directory the first time WAL syncing is
           // requested, so that in case users never turn on WAL sync,
           // we can avoid the disk I/O in the write code path.
           status = directories_.GetWalDir()->Fsync();
         }
+      }
+      if (status.ok()) {
+        // ship the logs to offloader
+        // On offloader, sync to disk must be aligned with local sync
+        // TODO need to develop proper 2pc here
+        repl_thread_info_.FlushReplLog();
       }
 
       if (merged_batch == &tmp_batch_) {

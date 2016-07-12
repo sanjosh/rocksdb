@@ -408,6 +408,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
     resp->is_eof = true;
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
+      << " seek_key=" << seekKey
       << " eof=" << resp->is_eof << std::endl;
   }
 
