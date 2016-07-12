@@ -282,7 +282,8 @@ struct MapInserter : public WriteBatch::Handler {
     rocksdb::Slice kSlice = k.Encode();
 
     std::cout << "INSERT cf=" << cfid 
-      << ":key=" << key.ToString()
+      << ":key=" << kSlice.ToString()
+      << ":key_size=" << kSlice.size()
       << ":value=" << value.ToString()
       << std::endl;
 
@@ -301,7 +302,8 @@ struct MapInserter : public WriteBatch::Handler {
     rocksdb::Slice kSlice = k.Encode();
     
     std::cout << "INSERT cf="  << kDefaultColumnFamilyIdx
-      << ":key=" << key.ToString()
+      << ":key=" << kSlice.ToString()
+      << ":key_size=" << kSlice.size()
       << ":value=" << value.ToString()
       << std::endl;
 
@@ -372,11 +374,12 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   std::string userKey;
   std::string value;
   SequenceNumber seq;
+  std::string inputUserKey;
 
-  std::string seekKey;
   if (extraSz) {
-    seekKey = std::string(req->buf, extraSz);
-    iter->Seek(seekKey);
+    inputUserKey = std::string(req->buf, extraSz);
+    MemKey k(inputUserKey, req->seq, ValueType::kTypeValue);
+    iter->Seek(k.Encode());
   } else {
     iter->SeekToFirst();
   }
@@ -401,14 +404,14 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
       << " cfid=" << req->cfid
       << " key=" << userKey
       << " value=" << value.substr(0, 10)
-      << " seek_key=" << seekKey
+      << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof 
       << std::endl;
   } else {
     resp->is_eof = true;
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
-      << " seek_key=" << seekKey
+      << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof << std::endl;
   }
 

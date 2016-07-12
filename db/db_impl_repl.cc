@@ -496,9 +496,15 @@ public:
     ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq) + k.size());
     oc->cfid = cfid_;
     oc->seq = seqnum_;
-    memcpy(oc->buf, k.data(), k.size());
 
-    SeekInternal(oc, k.size());
+    // input slice contains key + sequenceNumber
+    // See call to SetInternalKey(target, seq) in DBIter::Seek()
+    // extract userKey from this
+    Slice newSlice(k.data(), k.size() - sizeof(SequenceNumber));
+
+    memcpy(oc->buf, newSlice.data(), newSlice.size());
+
+    SeekInternal(oc, newSlice.size());
 
     free(oc);
   }
