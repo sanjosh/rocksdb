@@ -414,7 +414,7 @@ endif
 
 # SANITIZER - add -fsanitize=address here
 $(SHARED4):
-	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(LIB_SOURCES) $(TOOL_SOURCES) \
+	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) -fsanitize=address $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(LIB_SOURCES) $(TOOL_SOURCES) \
 		$(LDFLAGS) -o $@
 
 endif  # PLATFORM_SHARED_EXT
@@ -1063,6 +1063,7 @@ iostats_context_test: util/iostats_context_test.o $(LIBOBJECTS) $(TESTHARNESS)
 
 #-------------------------------------------------
 # make install related stuff
+#INSTALL_PATH ?= /home/dce/sandeep
 INSTALL_PATH ?= /usr/local
 
 uninstall:
