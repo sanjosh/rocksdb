@@ -397,6 +397,12 @@ public:
 
   ~ReplIterator() 
   {
+    CloseCursor();
+  }
+
+  void CloseCursor()
+  {
+
     ReplThreadInfo* t = &repl_thread_info_;
 
     int err = 0;
@@ -426,6 +432,9 @@ public:
     
     free(resp);
     free(oc);
+
+    remote_cursor_id_ = -1;
+    valid_ = false;
   }
 
   virtual bool Valid() const override 
@@ -437,11 +446,14 @@ public:
   {
     ReplThreadInfo* t = &repl_thread_info_;
 
+    /**
+     * Seek() can be called on same iter more than once 
+     * through the mongo-rocks layer
+     * if first seek fails, the second is seekToLast
+     * Handle that case here by closing and reinitializing cursor
+     */
     if (remote_cursor_id_ != -1) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, 
-        "cursor already open=%d", remote_cursor_id_);
-      valid_ = false;
-      return -1;
+      CloseCursor();
     }
 
     int err = 0;
@@ -530,7 +542,9 @@ public:
 
     free(oc);
   }
-  virtual void Next() override 
+
+
+  void NextInternal(int direction) 
   {
     ReplThreadInfo* t = &repl_thread_info_;
 
@@ -538,6 +552,7 @@ public:
     ReplCursorNextReq* oc = (ReplCursorNextReq*)malloc(sizeof(ReplCursorNextReq));
     const ssize_t totalSz = sizeof(ReplCursorNextReq);
     oc->cursor_id = remote_cursor_id_;
+    oc->direction = direction;
 
     ReplCursorNextResp* resp{nullptr};
 
@@ -577,9 +592,14 @@ public:
     free(resp);
     free(oc);
   }
+
+  virtual void Next() override
+  {
+    NextInternal(1);
+  }
   virtual void Prev() override 
   {
-    assert("not impl" == 0);
+    NextInternal(-1);
   }
   virtual Slice key() const override
   {

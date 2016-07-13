@@ -234,6 +234,7 @@ struct ReplCursorOpenResp
   CursorId cursor_id;  
   Status::Code status;
   bool is_eof;
+  int direction{0};
   SequenceNumber seq;
   KeyValue kv;
 };
@@ -241,6 +242,8 @@ struct ReplCursorOpenResp
 struct ReplCursorNextReq
 {
   CursorId cursor_id;
+  // 1 for next, -1 for prev
+  int direction{0}; 
 };
 
 struct ReplCursorNextResp

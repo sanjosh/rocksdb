@@ -377,10 +377,15 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   std::string inputUserKey;
 
   if (extraSz) {
+    assert(req->seekLast == false);
+    assert(req->seekFirst == false);
     inputUserKey = std::string(req->buf, extraSz);
     MemKey k(inputUserKey, req->seq, ValueType::kTypeValue);
     iter->Seek(k.Encode());
+  } else if (req->seekLast == true) {
+    iter->SeekToLast();
   } else {
+    assert(req->seekFirst == true);
     iter->SeekToFirst();
   }
 
@@ -437,7 +442,14 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
   }
 
   if (iter != nullptr) {
-    iter->Next();
+    if (req->direction == 1) {
+      iter->Next();
+    } else if (req->direction == -1) {
+      iter->Prev();
+    } else {
+      std::cout << "bad direction =" << req->direction << std::endl;
+      exit(1);
+    }
   
     if (iter->Valid()) {
       MemKey memkey = iter->key();
@@ -460,17 +472,18 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     resp->kv.putValue(value);
     resp->is_eof = false;
     resp->seq = seq;
-    std::cout << "NEXTCURSOR id=" << resp->cursor_id 
-      << " key=" << userKey
-      << " value=" << value.substr(0, 10)
-      << " seq=" << seq
-      << " eof=" << resp->is_eof 
-      << std::endl;
   } else {
     resp->status = Status::Code::kOk;
     resp->is_eof = true;
-    std::cout << "NEXTCURSOR id=" << resp->cursor_id  << " eof" << std::endl;
   }
+
+  std::cout << "NEXTCURSOR id=" << resp->cursor_id 
+    << " seq=" << seq
+    << " direction=" << req->direction
+    << " eof=" << resp->is_eof 
+    << " key=" << userKey
+    << " value=" << value.substr(0, 10)
+    << std::endl;
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
 
