@@ -508,6 +508,9 @@ public:
     ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq) + k.size());
     oc->cfid = cfid_;
     oc->seq = seqnum_;
+    oc->seekFirst = false;
+    oc->seekLast = false;
+    oc->numKeysPerNext = 1;
 
     // input slice contains key + sequenceNumber
     // See call to SetInternalKey(target, seq) in DBIter::Seek()
@@ -526,6 +529,8 @@ public:
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = true;
+    oc->seekLast = false;
+    oc->numKeysPerNext = 1;
 
     SeekInternal(oc, 0);
 
@@ -536,7 +541,9 @@ public:
     ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq));
     oc->cfid = cfid_;
     oc->seq = seqnum_;
+    oc->seekFirst = false;
     oc->seekLast = true;
+    oc->numKeysPerNext = 1;
 
     SeekInternal(oc, 0);
 
