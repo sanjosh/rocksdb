@@ -8,6 +8,7 @@
 #include <cassert>
 #include <string.h>
 #include <thread> 
+#include <mutex> 
 #include <map> // inmemory map
 #include <string> // key value
 #include <thread>
@@ -184,6 +185,7 @@ static std::string kDBPath = "/tmp/rocksdb_repl_server";
 struct DBWrapper {
 
   std::map<uint32_t, rocksdb::ColumnFamilyHandle*> handles_;
+  std::mutex handlesMutex_;
 
   std::map<uint32_t, rocksdb::Iterator*> openCursors_;
 
@@ -219,6 +221,8 @@ struct DBWrapper {
   // TODO do schema ops when u get createCF/deleteCF blobs in WAL
   rocksdb::ColumnFamilyHandle* openHandle(uint32_t cfid)
   {
+    std::unique_lock<std::mutex> l(handlesMutex_);
+
     rocksdb::ColumnFamilyHandle* cfptr{nullptr};
     auto iter = handles_.find(cfid);
     if (iter == handles_.end()) {
@@ -231,13 +235,15 @@ struct DBWrapper {
         handles_.insert(std::make_pair(cfid, cfptr));
         std::cout << " thread=" << std::this_thread::get_id() 
           << " create CF= " << cfid 
+          << " cfptr = " << cfptr 
           << " seq=" << seq_ << std::endl;
       } else {
         std::cout << "thread=" << std::this_thread::get_id() 
           << " failed to create CF= " << cfid << std::endl;
       }
+    } else {
+      cfptr = iter->second;
     }
-    cfptr = iter->second;
     return cfptr;
   }
 
@@ -275,8 +281,14 @@ struct MapInserter : public WriteBatch::Handler {
     const Slice& key,
     const Slice& value) override
   {
+    rocksdb::ColumnFamilyHandle* cf {nullptr};
 
-    auto cf = db_.openHandle(cfid);
+    do {
+      cf = db_.openHandle(cfid);
+      if (cf == nullptr) {
+        usleep(1000);
+      }
+    } while (cf == nullptr); 
 
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
@@ -317,7 +329,13 @@ struct MapInserter : public WriteBatch::Handler {
   virtual Status DeleteCF(uint32_t cfid, 
     const Slice& key)
   {
-    auto cf = db_.openHandle(cfid);
+    rocksdb::ColumnFamilyHandle* cf {nullptr};
+    do {
+      cf = db_.openHandle(cfid);
+      if (cf == nullptr) {
+        usleep(1000);
+      }
+    } while (cf == nullptr); 
 
     MemKey k(key, seq_++, ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
