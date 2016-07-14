@@ -869,6 +869,8 @@ void serverWorker(int sockfd)
 
 int main(int argc, char* argv[])
 {
+  kDBPath.append(std::to_string(getpid()));
+
   bool newInstance = false;
   if (argc > 1) {
     newInstance = true;
