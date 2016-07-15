@@ -62,6 +62,7 @@ class FlushJob {
            JobContext* job_context, LogBuffer* log_buffer,
            Directory* db_directory, Directory* output_file_directory,
            CompressionType output_compression, Statistics* stats,
+           bool is_replicated,
            EventLogger* event_logger);
 
   ~FlushJob();
@@ -91,6 +92,7 @@ class FlushJob {
   Directory* output_file_directory_;
   CompressionType output_compression_;
   Statistics* stats_;
+  bool is_replicated_{false};
   EventLogger* event_logger_;
   TableProperties table_properties_;
 };

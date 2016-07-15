@@ -66,6 +66,7 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
                    JobContext* job_context, LogBuffer* log_buffer,
                    Directory* db_directory, Directory* output_file_directory,
                    CompressionType output_compression, Statistics* stats,
+                   bool is_replicated,
                    EventLogger* event_logger)
     : dbname_(dbname),
       cfd_(cfd),
@@ -83,6 +84,7 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
       output_file_directory_(output_file_directory),
       output_compression_(output_compression),
       stats_(stats),
+      is_replicated_(is_replicated),
       event_logger_(event_logger) {
   // Update the thread status to indicate flush.
   ReportStartedFlush();
@@ -144,8 +146,13 @@ Status FlushJob::Run(FileMetaData* file_meta) {
   edit->SetLogNumber(mems.back()->GetNextLogNumber());
   edit->SetColumnFamily(cfd_->GetID());
 
-  // This will release and re-acquire the mutex.
-  Status s = WriteLevel0Table(mems, edit, &meta);
+  Status s;
+  if (!is_replicated_) {
+    // This will release and re-acquire the mutex.
+    s = WriteLevel0Table(mems, edit, &meta);
+  } else {
+    LogToBuffer(log_buffer_, "Skipping flush for replicated db");
+  }
 
   if (s.ok() &&
       (shutting_down_->load(std::memory_order_acquire) || cfd_->IsDropped())) {

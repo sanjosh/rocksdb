@@ -1503,14 +1503,6 @@ Status DBImpl::FlushMemTableToOutputFile(
     ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
     bool* made_progress, JobContext* job_context, LogBuffer* log_buffer) {
 
-  // Do not flush if db is replicated
-  if (repl_thread_info_.IsReplicated()) {
-    Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
-        "skipping flush for replicated db");
-    Status s;
-    return s;
-  }
-
   mutex_.AssertHeld();
   assert(cfd->imm()->NumNotFlushed() != 0);
   assert(cfd->imm()->IsFlushPending());
@@ -1524,7 +1516,9 @@ Status DBImpl::FlushMemTableToOutputFile(
       versions_.get(), &mutex_, &shutting_down_, snapshot_seqs,
       earliest_write_conflict_snapshot, job_context, log_buffer,
       directories_.GetDbDir(), directories_.GetDataDir(0U),
-      GetCompressionFlush(*cfd->ioptions()), stats_, &event_logger_);
+      GetCompressionFlush(*cfd->ioptions()), stats_, 
+      repl_thread_info_.IsReplicated(),
+      &event_logger_);
 
   FileMetaData file_meta;
 
@@ -3286,18 +3280,16 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
   // Need to create internal iterator from the arena.
   MergeIteratorBuilder merge_iter_builder(&cfd->internal_comparator(), arena);
   // Collect iterator for mutable mem
-  // TODO SANDEEP added during testing - enable later
-  if (!repl_thread_info_.IsReplicated())  {
-    merge_iter_builder.AddIterator(
-      super_version->mem->NewIterator(read_options, arena));
-    // Collect all needed child iterators for immutable memtables
-    super_version->imm->AddIterators(read_options, &merge_iter_builder);
-    // Collect iterators for files in L0 - Ln
-    super_version->current->AddIterators(read_options, env_options_,
-                                        &merge_iter_builder);
-  }
-  else {
+  merge_iter_builder.AddIterator(
+    super_version->mem->NewIterator(read_options, arena));
+  // Collect all needed child iterators for immutable memtables
+  super_version->imm->AddIterators(read_options, &merge_iter_builder);
+  // Collect iterators for files in L0 - Ln
+  super_version->current->AddIterators(read_options, env_options_,
+                                      &merge_iter_builder);
+
   // Collect remote iterator
+  if (repl_thread_info_.IsReplicated())  {
     repl_thread_info_.AddIterators(cfd->GetID(),
       read_options, 
       env_options_, 
@@ -3406,27 +3398,23 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
   (void) skip_memtable;
   bool done = false;
 
-  if (!repl_thread_info_.IsReplicated()) {
-
 // TODO SANDEEP enable this code later for both client and server
-    if (!skip_memtable) {
-      if (sv->mem->Get(lkey, value, &s, &merge_context)) {
-        done = true;
-        RecordTick(stats_, MEMTABLE_HIT);
-      } else if (sv->imm->Get(lkey, value, &s, &merge_context)) {
-        done = true;
-        RecordTick(stats_, MEMTABLE_HIT);
-      }
+  if (!skip_memtable) {
+    if (sv->mem->Get(lkey, value, &s, &merge_context)) {
+      done = true;
+      RecordTick(stats_, MEMTABLE_HIT);
+    } else if (sv->imm->Get(lkey, value, &s, &merge_context)) {
+      done = true;
+      RecordTick(stats_, MEMTABLE_HIT);
     }
-    bool key_exists = false;
-    // code to query SST will be removed later TODO Offloader
-    if (!done) {
-      PERF_TIMER_GUARD(get_from_output_files_time);
-      sv->current->Get(read_options, lkey, value, &s, &merge_context,
-                       value_found, &key_exists);
-      RecordTick(stats_, MEMTABLE_MISS);
-    }
-
+  }
+  bool key_exists = false;
+  // code to query SST will be removed later TODO SANDEEP Offloader
+  if (!done) {
+    PERF_TIMER_GUARD(get_from_output_files_time);
+    sv->current->Get(read_options, lkey, value, &s, &merge_context,
+                     value_found, &key_exists);
+    RecordTick(stats_, MEMTABLE_MISS);
   }
 
   // if key doesn't exist in previous tier
