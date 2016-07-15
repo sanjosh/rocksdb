@@ -193,7 +193,7 @@ struct DBWrapper {
 
   rocksdb::DB* rocksdb_{nullptr};
 
-  SequenceNumber seq_{0}; // until which upstream rocksdb is synced
+  std::atomic<SequenceNumber> seq_{0}; // until which upstream rocksdb is synced
 
   std::string identity_; // guid of upstream rocksdb instance
 
@@ -293,11 +293,13 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
 
+    /*
     std::cout << "INSERT cf=" << cfid 
       << ":key=" << kSlice.ToString()
       << ":key_size=" << kSlice.size()
       << ":value=" << value.ToString()
       << std::endl;
+    */
 
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
 
@@ -313,11 +315,13 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
     
+    /*
     std::cout << "INSERT cf="  << kDefaultColumnFamilyIdx
       << ":key=" << kSlice.ToString()
       << ":key_size=" << kSlice.size()
       << ":value=" << value.ToString()
       << std::endl;
+      */
 
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
 
@@ -339,9 +343,11 @@ struct MapInserter : public WriteBatch::Handler {
 
     MemKey k(key, seq_++, ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
+    /*
     std::cout << "DELETE cf=" << cfid
       << ":key=" << key.ToString()
       << std::endl;
+      */
 
     // delete or "insert a tombstone" here ?
     db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, kSlice);
@@ -354,9 +360,11 @@ struct MapInserter : public WriteBatch::Handler {
 
     MemKey k(key, seq_++, rocksdb::ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
+    /*
     std::cout << "DELETE cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
       << std::endl;
+      */
     db.rocksdb_->Delete(rocksdb::WriteOptions(), kSlice);
   }
 
@@ -365,13 +373,13 @@ struct MapInserter : public WriteBatch::Handler {
     rocksdb::VersionEdit edit;
     auto s = edit.DecodeFrom(blob);
     if (s.ok()) {
-      std::cout << "got version edit="
-        << edit.DebugString() << std::endl;
+      //std::cout << "got version edit="
+        //<< edit.DebugString() << std::endl;
     }
   }
 };
 
-static constexpr int walPort = 8192;
+static int walPort = 8192;
 
 int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 {
@@ -423,6 +431,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
     resp->kv.putValue(value);
     resp->seq = seq;
     resp->is_eof = false;
+    /*
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
       << " key=" << userKey
@@ -430,15 +439,18 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
       << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof 
       << std::endl;
+      */
   } else {
     resp->is_eof = true;
+    /*
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
       << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof << std::endl;
+      */
   }
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz, db.seq_);
 
   return err;
 }
@@ -495,6 +507,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     resp->is_eof = true;
   }
 
+  /*
   std::cout << "NEXTCURSOR id=" << resp->cursor_id 
     << " seq=" << seq
     << " direction=" << req->direction
@@ -502,8 +515,9 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     << " key=" << userKey
     << " value=" << value.substr(0, 10)
     << std::endl;
+    */
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz, db.seq_);
 
   return err;
 }
@@ -524,9 +538,9 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   }
   resp->cursor_id = req->cursor_id;
 
-  std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
+  //std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz, db.seq_);
 
   return err;
 }
@@ -578,9 +592,9 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 
     if (s.ok()) 
     {
-      std::cout << "GET cf=" << cfid 
-        << " found value=" << value.substr(0, 10) << " key=" << lookupKey 
-        << std::endl;
+      //std::cout << "GET cf=" << cfid 
+        //<< " found value=" << value.substr(0, 10) << " key=" << lookupKey 
+        //<< std::endl;
 
       totalSz += value.size();
       resp = (ReplLookupResp*)malloc(totalSz);
@@ -594,19 +608,19 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
       resp = (ReplLookupResp*)malloc(totalSz);
       resp->found = false;
       resp->status = Status::Code::kOk;
-      std::cout << "GET cf=" << cfid 
-        << " not found key=" << lookupKey 
-        << std::endl;
+      //std::cout << "GET cf=" << cfid 
+        //<< " not found key=" << lookupKey 
+        //<< std::endl;
     }
   } 
   else 
   {
     resp = (ReplLookupResp*)malloc(totalSz);
     resp->status = Status::Code::kInvalidArgument;
-    std::cout << "GET FATAL not found cf=" << cfid << std::endl;
+    //std::cout << "GET FATAL not found cf=" << cfid << std::endl;
   }
 
-  sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz);
+  sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz, db.seq_);
 
   free(resp);
 
@@ -755,7 +769,7 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
 
-  sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz);
+  sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz, db.seq_);
 
   free(resp);
 
@@ -887,9 +901,14 @@ void serverWorker(int sockfd)
 
 int main(int argc, char* argv[])
 {
+  //kDBPath.append(std::to_string(getpid()));
+
   bool newInstance = false;
   if (argc > 1) {
-    newInstance = true;
+    newInstance = atoi(argv[1]);
+    if (argc > 2) {
+      walPort = atoi(argv[2]);
+    }
   }
   db.init(newInstance);
 

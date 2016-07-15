@@ -56,9 +56,9 @@ struct ReplSocket
   int connect(const std::string& in_addr, int in_port,
       std::shared_ptr<rocksdb::Logger> in_logger);
 
-  int writeSocket(ReplRequestOp op, const void* data, const size_t totalSz);
+  int writeSocket(ReplRequestOp op, const void* data, const size_t totalSz, SequenceNumber seq);
 
-  int readSocket(ReplResponseOp& op, void** data, ssize_t &returnSz);
+  int readSocket(ReplResponseOp& op, void** data, ssize_t &returnSz, SequenceNumber* seq = nullptr);
 
   explicit ReplSocket();
 
@@ -84,7 +84,11 @@ struct ReplThreadInfo {
   // TODO remove mutex and put in smarter socket multiplexing 
   ReplSocket readSock;
 
+  // last seq shipped to offloader
   SequenceNumber lastReplSequence{0};
+
+  // last seq acked by offloader
+  SequenceNumber lastAckedSequence{0};
 
   std::list<std::string> replLogList;
 
@@ -165,9 +169,12 @@ struct KeyValue
 struct ReplRequestHeader
 {
   ReplRequestOp op;
+  // send local seq number to other side
+  SequenceNumber seq; 
   size_t size;
 };
 
+// TODO separate these two headers later
 typedef ReplRequestHeader ReplResponseHeader;
 
 // send different message for new db or existing db

@@ -56,7 +56,7 @@ int ReplSocket::connect(const std::string& in_addr, int in_port,
   return err;
 }
 
-int ReplSocket::writeSocket(ReplRequestOp op, const void* data, const size_t totalSz)
+int ReplSocket::writeSocket(ReplRequestOp op, const void* data, const size_t totalSz, SequenceNumber seq)
 {
   int err = 0;
 
@@ -67,10 +67,9 @@ int ReplSocket::writeSocket(ReplRequestOp op, const void* data, const size_t tot
     ReplRequestHeader header;
     header.op = op;
     header.size = totalSz;
+    header.seq = seq;
 
-    ssize_t writeSz = 0;
-
-    writeSz = ::write(sock_fd, (const void*)&header, sizeof(header));
+    ssize_t writeSz = ::write(sock_fd, (const void*)&header, sizeof(header));
 
     if (writeSz != sizeof(header)) {
       err = -errno;
@@ -99,7 +98,7 @@ int ReplSocket::writeSocket(ReplRequestOp op, const void* data, const size_t tot
   return err;
 }
 
-int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &returnSz)
+int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &returnSz, SequenceNumber* seqPtr)
 {
   int err = 0;
   op = OP_WILDCARD;
@@ -118,6 +117,9 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
       break;
     }
 
+    if (seqPtr) {
+      *seqPtr = respHeader.seq;
+    }
 
     char* lresp = (char*)malloc(respHeader.size);
     readSz = read(sock_fd, (void*)lresp, respHeader.size);
@@ -180,7 +182,7 @@ int ReplThreadInfo::initialize(const std::string& guid,
     initReq->identitySize = guid.size();
     memcpy(initReq->identity, guid.data(), guid.size());
 
-    err = writeSock.writeSocket(OP_INIT1, initReq, totalSz);
+    err = writeSock.writeSocket(OP_INIT1, initReq, totalSz, 0);
     if (err < 0) {
       break;
     }
@@ -259,7 +261,7 @@ void ReplThreadInfo::walUpdater()
         memcpy(sw->buf, batch.data(), batch.size());
         sw->seq = res.sequence;
 
-        int err = writeSock.writeSocket(OP_WAL, sw, totalSz);
+        int err = writeSock.writeSocket(OP_WAL, sw, totalSz, 0);
         (void)err;
 
         free(sw);
@@ -303,7 +305,7 @@ Status ReplThreadInfo::FlushReplLog()
     memcpy(sw->buf, s.data(), s.size());
     sw->seq = seq;
 
-    int err = writeSock.writeSocket(OP_WAL, sw, totalSz);
+    int err = writeSock.writeSocket(OP_WAL, sw, totalSz, 0);
     (void)err;
 
     free(sw);
@@ -347,7 +349,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
     memcpy(lreq->key, key.data(), key.size());
     lreq->seq = seq;
 
-    int err = readSock.writeSocket(OP_LOOKUP, lreq, totalSz);
+    int err = readSock.writeSocket(OP_LOOKUP, lreq, totalSz, 0);
     (void)err;
 
     free((void*)lreq);
@@ -355,7 +357,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
     ReplLookupResp* lresp;
     ssize_t readSz;
     ReplResponseOp op;
-    err = readSock.readSocket(op, (void**)&lresp, readSz);
+    err = readSock.readSocket(op, (void**)&lresp, readSz, &lastAckedSequence);
 
     if (op != RESP_LOOKUP || err < 0) {
       break;
@@ -414,7 +416,7 @@ public:
 
     do {
 
-      err = t->readSock.writeSocket(OP_CURSOR_CLOSE, oc, totalSz);
+      err = t->readSock.writeSocket(OP_CURSOR_CLOSE, oc, totalSz, 0);
       if (err < 0) {
         break;
       }
@@ -422,7 +424,7 @@ public:
       ssize_t readSz;
       ReplResponseOp op;
 
-      err = t->readSock.readSocket(op, (void**)&resp, readSz);
+      err = t->readSock.readSocket(op, (void**)&resp, readSz, &t->lastAckedSequence);
 
       if (op != RESP_CURSOR_CLOSE || err < 0) {
         break;
@@ -463,7 +465,7 @@ public:
 
       const ssize_t totalSz = sizeof(ReplCursorOpenReq) + extraSz;
 
-      err = t->readSock.writeSocket(OP_CURSOR_OPEN, oc, totalSz);
+      err = t->readSock.writeSocket(OP_CURSOR_OPEN, oc, totalSz, 0);
       if (err < 0) {
         Log(InfoLogLevel::ERROR_LEVEL, logger, 
           "cursor write got error err=%d", err);
@@ -473,7 +475,7 @@ public:
       ssize_t readSz;
       ReplResponseOp op;
 
-      err = t->readSock.readSocket(op, (void**)&resp, readSz);
+      err = t->readSock.readSocket(op, (void**)&resp, readSz, &t->lastAckedSequence);
       if (op != RESP_CURSOR_OPEN || err < 0) {
         Log(InfoLogLevel::ERROR_LEVEL, logger, 
           "cursor read got error err=%d", err);
@@ -565,7 +567,7 @@ public:
 
     do {
 
-      err = t->readSock.writeSocket(OP_CURSOR_NEXT, oc, totalSz);
+      err = t->readSock.writeSocket(OP_CURSOR_NEXT, oc, totalSz, 0);
       if (err < 0) {
         break;
       }
@@ -573,7 +575,7 @@ public:
       ssize_t readSz;
       ReplResponseOp op;
 
-      err = t->readSock.readSocket(op, (void**)&resp, readSz);
+      err = t->readSock.readSocket(op, (void**)&resp, readSz, &t->lastAckedSequence);
 
       if (op != RESP_CURSOR_NEXT || err < 0) {
         valid_ = false;
