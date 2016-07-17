@@ -507,6 +507,12 @@ public:
 
   virtual void Seek(const Slice& k) override 
   {
+    if (k.size() == sizeof(SequenceNumber))  {
+      // if incoming key doesnt have user key, its a seek first
+      // TODO need to send seqnum to offloader
+      return SeekToFirst();
+    }
+
     ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq) + k.size());
     oc->cfid = cfid_;
     oc->seq = seqnum_;
