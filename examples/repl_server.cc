@@ -202,21 +202,60 @@ struct DBWrapper {
   {
   }
 
-  void init(bool newInstance)
+  int init(bool newInstance)
   {
+    rocksdb::Status status;
+
     rocksdb::Options options;
-    if (newInstance) {
-      options.create_if_missing = true;
-      options.error_if_exists = false;
-    }
     options.comparator = new MemKeyCompare();
 
-    auto s = rocksdb::DB::Open(options, kDBPath, &rocksdb_);
-    assert(s.ok());
+    if (newInstance) {
 
-    handles_.insert(std::make_pair(kDefaultColumnFamilyIdx,
-      rocksdb_->DefaultColumnFamily()));
-    // TODO need to open all existing cf if not new instance
+      options.create_if_missing = true;
+      options.error_if_exists = false;
+
+      status = rocksdb::DB::Open(options, kDBPath, &rocksdb_);
+
+      if (status.ok()) {
+        handles_.insert(std::make_pair(kDefaultColumnFamilyIdx,
+          rocksdb_->DefaultColumnFamily()));
+      }
+
+    } else {
+
+      std::vector<std::string> columnFamilyNames;
+
+      status = rocksdb::DB::ListColumnFamilies(options,
+        kDBPath, 
+        &columnFamilyNames);
+
+      if (status.ok()) {
+
+        std::vector<rocksdb::ColumnFamilyDescriptor> columnFamilyNameVec;
+        std::vector<rocksdb::ColumnFamilyHandle*> columnFamilyHandleVec;
+
+        for (auto elem : columnFamilyNames) {
+          columnFamilyNameVec.push_back(rocksdb::ColumnFamilyDescriptor(
+            elem, rocksdb::ColumnFamilyOptions()));
+        }
+
+        status = rocksdb::DB::Open(options, kDBPath, 
+            columnFamilyNameVec, 
+            &columnFamilyHandleVec, 
+            &rocksdb_);
+
+        if (status.ok()) {
+          for (auto cfhandle : columnFamilyHandleVec)
+          {
+            handles_.insert(std::make_pair(cfhandle->GetID(), cfhandle));
+          }
+        }
+      }
+    }
+
+    assert(status.ok()); // TODO add error checks later
+
+    return 0;
   }
 
   // TODO do schema ops when u get createCF/deleteCF blobs in WAL
@@ -227,6 +266,7 @@ struct DBWrapper {
     rocksdb::ColumnFamilyHandle* cfptr{nullptr};
     auto iter = handles_.find(cfid);
     if (iter == handles_.end()) {
+      // TODO this should be done on getting VersionEdit in WAL
       rocksdb::ColumnFamilyOptions column_family_options;
       column_family_options.comparator = new MemKeyCompare();
 
