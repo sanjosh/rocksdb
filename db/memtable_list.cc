@@ -280,7 +280,8 @@ Status MemTableList::InstallMemtableFlushResults(
     ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
     const autovector<MemTable*>& mems, VersionSet* vset, InstrumentedMutex* mu,
     uint64_t file_number, autovector<MemTable*>* to_delete,
-    Directory* db_directory, LogBuffer* log_buffer) {
+    Directory* db_directory, LogBuffer* log_buffer,
+    bool is_replicated) {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_MEMTABLE_INSTALL_FLUSH_RESULTS);
   mu->AssertHeld();
@@ -330,7 +331,10 @@ Status MemTableList::InstallMemtableFlushResults(
         LogToBuffer(log_buffer, "[%s] Level-0 commit table #%" PRIu64
                                 ": memtable #%" PRIu64 " done",
                     cfd->GetName().c_str(), m->file_number_, mem_id);
-        //assert(m->file_number_ > 0); only for non-repl db SANDEEP
+        if (not is_replicated) {
+          // files not created for repl db SANDEEP
+          assert(m->file_number_ > 0); 
+        }
         current_->Remove(m, to_delete);
       } else {
         // commit failed. setup state so that we can flush again.

@@ -1315,7 +1315,11 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& log_numbers,
           auto iter = version_edits.find(cfd->GetID());
           assert(iter != version_edits.end());
           VersionEdit* edit = &iter->second;
-          status = WriteLevel0TableForRecovery(job_id, cfd, cfd->mem(), edit);
+          if (0 == db_options_.repl_addr.size()) {
+            // SANDEEP : cant tell if db is replicated until tcp connxn successful
+            // in the meantime, use the options
+            status = WriteLevel0TableForRecovery(job_id, cfd, cfd->mem(), edit);
+          }
           if (!status.ok()) {
             // Reflect errors immediately so that conditions like full
             // file-systems cause the DB::Open() to fail.
@@ -1379,7 +1383,11 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& log_numbers,
 
       // flush the final memtable (if non-empty)
       if (cfd->mem()->GetFirstSequenceNumber() != 0) {
-        status = WriteLevel0TableForRecovery(job_id, cfd, cfd->mem(), edit);
+        if (0 == db_options_.repl_addr.size()) {
+            // SANDEEP : cant tell if db is replicated until tcp connxn successful
+            // in the meantime, use the options
+          status = WriteLevel0TableForRecovery(job_id, cfd, cfd->mem(), edit);
+        }
         if (!status.ok()) {
           // Recovery failed
           break;

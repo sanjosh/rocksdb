@@ -189,7 +189,8 @@ class MemTableList {
       ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
       const autovector<MemTable*>& m, VersionSet* vset, InstrumentedMutex* mu,
       uint64_t file_number, autovector<MemTable*>* to_delete,
-      Directory* db_directory, LogBuffer* log_buffer);
+      Directory* db_directory, LogBuffer* log_buffer,
+      bool is_replicated = false);
 
   // New memtables are inserted at the front of the list.
   // Takes ownership of the referenced held on *m by the caller of Add().
