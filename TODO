@@ -1,8 +1,12 @@
 
 Iterator
-* Enable merge of results of local memtable and remote iter
-* Seek backward, use of keys, other options
 * fetch multiple from remote iterator
+* How to test for correctness of merge
+============================
+
+SST Files
+* verify changes which disable SST write
+  during recovery and normal ops
 
 ============================
 
@@ -11,21 +15,22 @@ Schema
 ============================
 
 WAL update
-* getUpdatesSince() wal read must be blocking
 * have one repl thread for all dbs 
+* long-term goal
 ============================
 
 RPC
-* use apache thrift 
+* use apache thrift ?
 
 ============================
-MySQL
+MySQL - myrocks changes
 * separate column family
 
 ============================
 Tests
 * correctness tests
 * performance tests
+* mongo tests
 
 ============================
 Operational issues
