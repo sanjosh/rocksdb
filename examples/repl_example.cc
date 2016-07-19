@@ -18,7 +18,7 @@ using namespace rocksdb;
 
 std::string kDBPath = "/tmp/rocksdb_repl_example";
 
-static size_t NumKeys = 1000000L;
+static size_t NumKeys = 1000L;
 
 static void waitForUser()
 {
@@ -74,6 +74,7 @@ static void Deleter()
     if (i & ((i % 100) == 0)) {
       auto s = db->Write(writeOpt, &batch);
       std::cout << "finished deletes=" << i << std::endl;
+      sleep(1);
     }
   }
   auto s = db->Write(writeOpt, &batch);
@@ -122,6 +123,7 @@ static void WriterThread()
       Deleter);
     fut.wait();
   }
+  std::cout << "terminating writes at round=" << count << std::endl;
 }
 
 int main() {
@@ -145,16 +147,20 @@ int main() {
   auto write_fut = std::async(std::launch::async,
       WriterThread);
 
-  for (int i = 0; i < 100; i++)
+  std::vector<std::future<void>> futVec;
+
+  for (int i = 0; i < 1000 ; i++)
   {
     std::cout << "start read round=" << i++ << std::endl;
+
+    /*
     auto fut1 = std::async(std::launch::async,
       DoIter);
+    fut1.wait();
+    */
 
     auto fut2 = std::async(std::launch::async,
       Getter);
-
-    fut1.wait();
     fut2.wait();
   }
 

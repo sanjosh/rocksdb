@@ -794,6 +794,7 @@ void serverWorker(int sockfd)
 
     int err = sock.readSocket(op, &void_req, returnSz);
     if (err < 0) {
+      std::cout << "got readheader error" << std::endl;
       eof = true;
       break;
     }

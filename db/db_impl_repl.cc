@@ -109,7 +109,11 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
 
     // read resp
     ReplResponseHeader respHeader;
-    ssize_t readSz = read(sock_fd, (void*)&respHeader, sizeof(respHeader));
+    ssize_t readSz;
+
+    do {
+      readSz = read(sock_fd, (void*)&respHeader, sizeof(respHeader));
+    } while ((readSz < 0) && (errno == EINTR || errno == EAGAIN));
 
     if (readSz != sizeof(respHeader)) {
       Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
@@ -122,7 +126,9 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
     }
 
     char* lresp = (char*)malloc(respHeader.size);
-    readSz = read(sock_fd, (void*)lresp, respHeader.size);
+    do {
+      readSz = read(sock_fd, (void*)lresp, respHeader.size);
+    } while ((readSz < 0) && (errno == EINTR || errno == EAGAIN));
 
     if (readSz != (ssize_t)respHeader.size) {
       Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
@@ -291,6 +297,7 @@ Status ReplThreadInfo::AddToReplLog(WriteBatch& newBatch)
 Status ReplThreadInfo::FlushReplLog()
 {
   auto& logger = info_log;
+  (void)logger;
 
   for (auto& elem : replLogList)
   {
@@ -312,12 +319,14 @@ Status ReplThreadInfo::FlushReplLog()
 
     lastReplSequence = seq + batch.Count() - 1; 
 
+    /*
     Log(InfoLogLevel::INFO_LEVEL, logger, 
       "Repl thread sent seq=%llu actual batch=%lu numUpd=%d ", 
       lastReplSequence,
       elem.size(),
       batch.Count()
       );
+      */
   }
 
   replLogList.clear();
@@ -495,9 +504,11 @@ public:
         valid_ = false;
       }
 
+      /*
       Log(InfoLogLevel::INFO_LEVEL, logger, 
           "cursor seek got cfid=%d valid=%d key=%s value=%s seq=%llu", 
           cfid_, valid_, key_.c_str(), value_.c_str(), resp->seq);
+          */
 
     } while (0);
 
@@ -598,9 +609,12 @@ public:
       } else {
         valid_ = false;
       }
+
+      /*
       Log(InfoLogLevel::INFO_LEVEL, logger, 
           "cursor next got cfid=%d valid=%d key=%s value=%s seq=%llu", 
           cfid_, valid_, key_.c_str(), value_.c_str(), resp->seq);
+          */
 
     } while (0);
     
