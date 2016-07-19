@@ -24,6 +24,7 @@
 #include "db/dbformat.h" // ValueType and InternalKey
 #include "db/db_repl.h" // Repl structures
 #include "util/coding.h" // Repl structures
+#include "os_util.h"
 
 using rocksdb::WriteBatch;
 using rocksdb::ReplSocket;
@@ -783,7 +784,7 @@ void serverWorker(int sockfd)
 
   ReplSocket sock(sockfd);
 
-  std::cout << "started work on socket=" << sockfd << std::endl;
+  std::cout << "tid=" << gettid() << " started work on socket=" << sockfd << std::endl;
 
   while (!eof) 
   {
@@ -897,6 +898,7 @@ void serverWorker(int sockfd)
       }
     }
   }
+  std::cout << "tid=" << gettid() << " stopped work on socket=" << sockfd << std::endl;
 }
 
 int main(int argc, char* argv[])
