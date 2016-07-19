@@ -330,7 +330,7 @@ Status MemTableList::InstallMemtableFlushResults(
         LogToBuffer(log_buffer, "[%s] Level-0 commit table #%" PRIu64
                                 ": memtable #%" PRIu64 " done",
                     cfd->GetName().c_str(), m->file_number_, mem_id);
-        assert(m->file_number_ > 0);
+        //assert(m->file_number_ > 0); only for non-repl db SANDEEP
         current_->Remove(m, to_delete);
       } else {
         // commit failed. setup state so that we can flush again.
