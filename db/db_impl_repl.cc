@@ -14,6 +14,52 @@
 
 namespace rocksdb {
 
+/*
+ * Use MSG_NOSIGNAL to prevent SIGPIPE on closed tcp connxn
+ * if partial write, retry
+ */
+static ssize_t writeWrap(int fd, const char* buf, size_t count)
+{
+  ssize_t writeSz = 0;
+  do {
+    writeSz = ::send(fd, (const void*)buf, count, MSG_NOSIGNAL);
+  } while (writeSz < 0 && (errno == EINTR || errno == EAGAIN));
+  return writeSz;
+}
+
+/*
+ * Check interrupted syscall EINTR and EAGAIN, 
+ * use WAITALL to get all data in one shot
+ * if still get partial reads, retry
+ */
+static ssize_t readWrap(int fd, char* buf, size_t count)
+{
+  ssize_t currentReadSz = 0;
+  ssize_t partialReadSz = 0;
+
+  while (partialReadSz < (ssize_t)count) {
+
+    do {
+
+      currentReadSz = ::recv(fd,
+        buf + partialReadSz, 
+        count - partialReadSz, 
+        MSG_WAITALL);
+
+    } while ((currentReadSz < 0) && (errno == EINTR || errno == EAGAIN));
+
+    if (currentReadSz < 0) {
+      partialReadSz = currentReadSz;
+      break;
+    }
+
+    partialReadSz += currentReadSz;
+  }
+
+  return partialReadSz;
+}
+
+
 ReplSocket::ReplSocket()
 {
 }
@@ -25,7 +71,7 @@ ReplSocket::ReplSocket(int sockfd)
 
 ReplSocket::~ReplSocket()
 {
-  close(sock_fd);
+  this->close();
 }
 
 int ReplSocket::connect(const std::string& in_addr, int in_port,
@@ -49,8 +95,7 @@ int ReplSocket::connect(const std::string& in_addr, int in_port,
   int err = ::connect(sock_fd, (struct sockaddr*)&server_addr, server_addr_size);
   if (err < 0) 
   {
-    close(sock_fd);
-    sock_fd = -1;
+    this->close();
     return errno;
   }
   return err;
@@ -69,7 +114,7 @@ int ReplSocket::writeSocket(ReplRequestOp op, const void* data, const size_t tot
     header.size = totalSz;
     header.seq = seq;
 
-    ssize_t writeSz = ::write(sock_fd, (const void*)&header, sizeof(header));
+    ssize_t writeSz = writeWrap(sock_fd, (const char*)&header, sizeof(header));
 
     if (writeSz != sizeof(header)) {
       err = -errno;
@@ -81,7 +126,7 @@ int ReplSocket::writeSocket(ReplRequestOp op, const void* data, const size_t tot
       break;
     }
 
-    writeSz = write(sock_fd, (const void*)data, totalSz);
+    writeSz = writeWrap(sock_fd, (const char*)data, totalSz);
 
     if (writeSz != (ssize_t)totalSz) {
       err = -errno;
@@ -102,21 +147,18 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
 {
   int err = 0;
   op = OP_WILDCARD;
-
+ 
   do
   {
     std::unique_lock<std::mutex> l(sock_mutex);
 
     // read resp
     ReplResponseHeader respHeader;
-    ssize_t readSz;
 
-    do {
-      readSz = read(sock_fd, (void*)&respHeader, sizeof(respHeader));
-    } while ((readSz < 0) && (errno == EINTR || errno == EAGAIN));
+    ssize_t readSz = readWrap(sock_fd, (char*)&respHeader, sizeof(respHeader));
 
     if (readSz != sizeof(respHeader)) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed");
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl header read failed errno=", errno);
       err = -errno;
       break;
     }
@@ -126,12 +168,10 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
     }
 
     char* lresp = (char*)malloc(respHeader.size);
-    do {
-      readSz = read(sock_fd, (void*)lresp, respHeader.size);
-    } while ((readSz < 0) && (errno == EINTR || errno == EAGAIN));
+    readSz = readWrap(sock_fd, (char*)lresp, respHeader.size);
 
     if (readSz != (ssize_t)respHeader.size) {
-      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed");
+      Log(InfoLogLevel::ERROR_LEVEL, logger, "Repl data read failed errno=", errno);
       err = -errno;
       break;
     }
@@ -142,6 +182,20 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
 
   } while (0);
 
+  return err;
+}
+
+bool ReplSocket::IsOpen() const
+{
+  return (sock_fd != -1);
+}
+
+int ReplSocket::close()
+{
+  int err = ::close(sock_fd);
+  if (err == 0) {
+    sock_fd = -1;
+  }
   return err;
 }
 
@@ -194,10 +248,11 @@ int ReplThreadInfo::initialize(const std::string& guid,
     }
 
     ReplDBResp* lresp;
-    ssize_t readSz;
-    ReplResponseOp op;
+    ssize_t readSz = 0;
+    ReplResponseOp op = OP_WILDCARD;
     err = writeSock.readSocket(op, (void**)&lresp, readSz);
-    if (op != OP_INIT1 || err < 0) {
+    if (op != RESP_INIT1 || err < 0) {
+      assert(err < 0);
       break;
     }
 
@@ -210,6 +265,11 @@ int ReplThreadInfo::initialize(const std::string& guid,
     free(lresp);
 
   } while (0);
+
+  if (err < 0) {
+    writeSock.close();
+    readSock.close();
+  }
 
   return err;
 }
@@ -289,9 +349,14 @@ void ReplThreadInfo::walUpdater()
 
 Status ReplThreadInfo::AddToReplLog(WriteBatch& newBatch)
 {
-  Slice s = WriteBatchInternal::Contents(&newBatch);
-  replLogList.push_back(s.ToString());
-  return Status::OK();
+  Status s;
+  if (writeSock.IsOpen()) {
+    Slice slice = WriteBatchInternal::Contents(&newBatch);
+    replLogList.push_back(slice.ToString());
+  } else {
+    s = Status::IOError("connxn closed");
+  }
+  return s;
 }
 
 Status ReplThreadInfo::FlushReplLog()
@@ -299,25 +364,36 @@ Status ReplThreadInfo::FlushReplLog()
   auto& logger = info_log;
   (void)logger;
 
+  Status status;
+
+  if (!writeSock.IsOpen()) {
+    return Status::IOError("connxc closed");
+  }
+
   for (auto& elem : replLogList)
   {
     WriteBatch batch(elem);
-    Slice s = WriteBatchInternal::Contents(&batch);
+    Slice slice = WriteBatchInternal::Contents(&batch);
     auto seq = WriteBatchInternal::Sequence(&batch);
 
     ssize_t totalSz = sizeof(ReplWALUpdate) + batch.GetDataSize();
 
     // TODO : combine into an operator new + ctor
     ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
-    memcpy(sw->buf, s.data(), s.size());
+    memcpy(sw->buf, slice.data(), slice.size());
     sw->seq = seq;
 
     int err = writeSock.writeSocket(OP_WAL, sw, totalSz, 0);
-    (void)err;
 
     free(sw);
 
-    lastReplSequence = seq + batch.Count() - 1; 
+    if (err < 0) {
+      status = Status::IOError("connxn broken");
+      writeSock.close();
+      break;
+    } else {
+      lastReplSequence = seq + batch.Count() - 1; 
+    }
 
     /*
     Log(InfoLogLevel::INFO_LEVEL, logger, 
@@ -331,7 +407,7 @@ Status ReplThreadInfo::FlushReplLog()
 
   replLogList.clear();
 
-  return Status::OK();
+  return status;
 }
 
 void DBImpl::ReplThreadBody(void* arg)

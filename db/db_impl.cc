@@ -4581,7 +4581,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
         // ship the logs to offloader
         // On offloader, sync to disk must be aligned with local sync
         // TODO need to develop proper 2pc here
-        repl_thread_info_.FlushReplLog();
+        status = repl_thread_info_.FlushReplLog();
       }
 
       if (merged_batch == &tmp_batch_) {

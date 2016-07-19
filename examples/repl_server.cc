@@ -621,11 +621,11 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
     //std::cout << "GET FATAL not found cf=" << cfid << std::endl;
   }
 
-  sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz, db.seq_);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz, db.seq_);
 
   free(resp);
 
-  return ret;
+  return err;
 }
 
 int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
@@ -680,7 +680,7 @@ int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
  */
 int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
 {
-  int ret = 0;
+  int err = 0;
 
   std::string remoteIdentity(req->identity, req->identitySize);
 
@@ -770,11 +770,11 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
 
-  sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz, db.seq_);
+  err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz, db.seq_);
 
   free(resp);
 
-  return ret;
+  return err;
 }
 
 

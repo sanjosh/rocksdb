@@ -60,6 +60,10 @@ struct ReplSocket
 
   int readSocket(ReplResponseOp& op, void** data, ssize_t &returnSz, SequenceNumber* seq = nullptr);
 
+  int close();
+
+  bool IsOpen() const;
+
   explicit ReplSocket();
 
   explicit ReplSocket(int sockfd);
