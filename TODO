@@ -2,6 +2,13 @@
 Iterator
 * fetch multiple from remote iterator
 * How to test for correctness of merge
+
+* put tombstones for delete in repl_server
+* use min(memtable->earliest_seqno, snapshot_seqnum) 
+  on remote as upper bound for scan
+  
+  memtable->earliest_seqno -- current seqnum
+
 ============================
 
 SST Files
