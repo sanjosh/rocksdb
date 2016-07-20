@@ -78,6 +78,7 @@ struct ReplSocket
 };
 
 /**
+ * This is the key format as stored on the offloader
  * Either in the key or value, we must retain the
  * original sequence number and ValueType so
  * it can be returned to the client-side rocksdb 
@@ -111,6 +112,13 @@ struct ReplKey
 
   ReplKey(const Slice& s) 
   {
+    assert(s.size() > sizeof(uint64_t) + sizeof(uint32_t));
+    rep.assign(s.data(), s.size());
+  }
+
+  ReplKey(const std::string& s) 
+  {
+    assert(s.size() > sizeof(uint64_t) + sizeof(uint32_t));
     rep.assign(s.data(), s.size());
   }
 
@@ -394,7 +402,6 @@ struct ReplCursorNextResp
   CursorId cursor_id;
   Status::Code status;
   bool is_eof;
-  SequenceNumber seq;
   KeyValue kv;
 };
 
@@ -413,15 +420,13 @@ struct ReplCursorMultiNextResp
   Status::Code status;
   bool is_eof;
 
-  // number of entries in each of 3 arrays serialized below
+  // number of entries in each of 2 arrays serialized below
   uint32_t num_sent; 
 
-  size_t seqSz;
   size_t keySz;
   size_t valueSz;
   char buf[0];
   // followed by
-  // array of seq num of byte size=seqSz
   // array of keys of byte size=keySz
   // array of values of byte size=valueSz
 };

@@ -13,6 +13,7 @@
 #include <string> // key value
 #include <thread>
 #include <future>
+#include <signal.h>
 
 #include <rocksdb/db.h>
 #include "rocksdb/types.h" // SequenceNumber
@@ -99,7 +100,8 @@ struct DBWrapper {
 
   rocksdb::DB* rocksdb_{nullptr};
 
-  std::atomic<SequenceNumber> seq_{0}; // until which upstream rocksdb is synced
+  // seq until which upstream rocksdb is synced
+  std::atomic<SequenceNumber> lastAppliedSeq_{0}; 
 
   std::string identity_; // guid of upstream rocksdb instance
 
@@ -182,7 +184,7 @@ struct DBWrapper {
         std::cout << " thread=" << std::this_thread::get_id() 
           << " create CF= " << cfid 
           << " cfptr = " << cfptr 
-          << " seq=" << seq_ << std::endl;
+          << " seq=" << lastAppliedSeq_ << std::endl;
       } else {
         std::cout << "thread=" << std::this_thread::get_id() 
           << " failed to create CF= " << cfid << std::endl;
@@ -213,6 +215,7 @@ static void write_bson(const std::string& value)
 struct MapInserter : public WriteBatch::Handler {
 
   DBWrapper& db_;
+
   // Sequence number must be incremented by every op
   // in batch, bcos thats what client-side rocksdb does
   SequenceNumber seq_;
@@ -346,7 +349,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 
   ReplCursorOpenResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
-  std::string userKey;
+  std::string memKey;
   std::string value;
   SequenceNumber seq;
   std::string inputUserKey;
@@ -365,24 +368,22 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   }
 
   if (iter->Valid()) {
-    ReplKey memkey = iter->key();
-    userKey = memkey.userKey();
-    seq = memkey.seq();
+    memKey = iter->key().ToString();
     value = iter->value().ToString();
-    totalSz += userKey.size() + value.size();
+    totalSz += iter->key().size() + iter->value().size();
   } 
 
   resp = (ReplCursorOpenResp*)malloc(totalSz);
   resp->cursor_id = local_cursor_id;
   resp->status = Status::Code::kOk;
+
   if (iter->Valid()) {
-    resp->kv.putKey(userKey);
+    resp->kv.putKey(memKey);
     resp->kv.putValue(value);
-    resp->seq = seq;
     resp->is_eof = false;
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
-      << " key=" << userKey
+      << " key=" << memKey
       << " value=" << value.substr(0, 10)
       << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof 
@@ -395,7 +396,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
       << " eof=" << resp->is_eof << std::endl;
   }
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz, db.seq_);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz, db.lastAppliedSeq_);
 
   free(resp);
 
@@ -417,7 +418,6 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
 
   std::vector<std::string> keyArray;
   std::vector<std::string> valueArray;
-  std::vector<SequenceNumber> seqArray;
 
   if (((req->direction == 1) || (req->direction == -1)) &&
     (iter != nullptr)) {
@@ -432,9 +432,7 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
       } 
   
       if (iter->Valid()) {
-        ReplKey memkey = iter->key();
-        keyArray.push_back(memkey.userKey());
-        seqArray.push_back(memkey.seq());
+        keyArray.push_back(iter->key().ToString());
         valueArray.push_back(iter->value().ToString());
       } else {
         break;
@@ -448,7 +446,7 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
   resp = (rocksdb::ReplCursorMultiNextResp*)malloc(totalSz);
   resp->cursor_id = req->cursor_id;
   resp->num_sent = 0;
-  resp->seqSz = resp->keySz = resp->valueSz = 0;
+  resp->keySz = resp->valueSz = 0;
 
   // iter has buffer which shouldnt get freed before write
   BufferIter bufIter(nullptr, 0);
@@ -459,17 +457,13 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
     std::cout << "NEXTCURSOR id=" << resp->cursor_id << " not found" << std::endl;
   } else if (keyArray.size()) {
     resp->status = Status::Code::kOk;
-    resp->num_sent = seqArray.size();
+    resp->num_sent = keyArray.size();
     resp->is_eof = false;
-
-    // serialize seqArray, keyArray, valueArray
-    resp->seqSz = seqArray.size() * sizeof(decltype(seqArray)::value_type);
-    bufIter.writeNext((char*)&seqArray[0], resp->seqSz);
 
     resp->keySz = bufIter.writeVector(keyArray);
     resp->valueSz = bufIter.writeVector(valueArray);
 
-    assert(resp->seqSz + resp->keySz + resp->valueSz == bufIter.size());
+    assert(resp->keySz + resp->valueSz == bufIter.size());
     totalSz += bufIter.size();
     resp = (rocksdb::ReplCursorMultiNextResp*)realloc(resp, totalSz);
     memcpy(resp->buf, bufIter.data(), bufIter.size());
@@ -492,7 +486,7 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_MULTI_NEXT, 
     resp, 
     totalSz, 
-    db.seq_);
+    db.lastAppliedSeq_);
 
   free(resp);
 
@@ -504,7 +498,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
 
   rocksdb::ReplCursorNextResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
-  std::string userKey;
+  std::string memkey;
   std::string value;
   SequenceNumber seq{0};
 
@@ -526,11 +520,9 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     }
   
     if (iter->Valid()) {
-      ReplKey memkey = iter->key();
-      userKey = memkey.userKey();
-      seq = memkey.seq();
+      memkey = iter->key().ToString();
       value = iter->value().ToString();
-      totalSz += userKey.size() + value.size();
+      totalSz += memkey.size() + value.size();
     } 
   }
   
@@ -542,10 +534,9 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     std::cout << "NEXTCURSOR id=" << resp->cursor_id << " not found" << std::endl;
   } else if (iter->Valid()) {
     resp->status = Status::Code::kOk;
-    resp->kv.putKey(userKey);
+    resp->kv.putKey(memkey);
     resp->kv.putValue(value);
     resp->is_eof = false;
-    resp->seq = seq;
   } else {
     resp->status = Status::Code::kOk;
     resp->is_eof = true;
@@ -561,7 +552,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     << std::endl;
     */
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz, db.seq_);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz, db.lastAppliedSeq_);
 
   free(resp);
 
@@ -586,7 +577,7 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
 
   std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz, db.seq_);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz, db.lastAppliedSeq_);
 
   free(resp);
 
@@ -611,8 +602,8 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
   ReplLookupResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
 
-  while (db.seq_ < req->seq) {
-    std::cout << "waiting for wal seq=" << db.seq_
+  while (db.lastAppliedSeq_ < req->seq) {
+    std::cout << "waiting for wal seq=" << db.lastAppliedSeq_
       << " to reach lookup seq=" << req->seq << std::endl;
     sleep(10);
   }
@@ -630,7 +621,7 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 
   int ret = 0;
 
-  ReplKey internalKey(lookupKey, db.seq_, rocksdb::kValueTypeForSeek);
+  ReplKey internalKey(lookupKey, db.lastAppliedSeq_, rocksdb::kValueTypeForSeek);
 
   if (cf != nullptr)
   {
@@ -668,7 +659,7 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
     //std::cout << "GET FATAL not found cf=" << cfid << std::endl;
   }
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz, db.seq_);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz, db.lastAppliedSeq_);
 
   free(resp);
 
@@ -696,7 +687,7 @@ int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
   batch.Iterate(&handler);
 
   // Update db sequence number
-  db.seq_ = req->seq + batch.Count();
+  db.lastAppliedSeq_ = req->seq + batch.Count();
 
   return ret;
 }
@@ -731,7 +722,7 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
 
   std::string remoteIdentity(req->identity, req->identitySize);
 
-  const bool IsNewOffloader = ((db.identity_.size() == 0) && (db.seq_ == 0));
+  const bool IsNewOffloader = ((db.identity_.size() == 0) && (db.lastAppliedSeq_ == 0));
   // TODO Pass exact state from client instead of deriving the situation here
   const bool IsNewRocksDB = (req->seq == 0);
   const bool IsDifferent = (db.identity_ != remoteIdentity);
@@ -753,7 +744,7 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
     if (IsNewOffloader)
     {
       // CASE : fresh rocksdb connecting to fresh offloader
-      assert(db.seq_ == 0);
+      assert(db.lastAppliedSeq_ == 0);
       assert(req->seq == 0);
       db.identity_ = remoteIdentity;
       caseString = "fresh->fresh";
@@ -765,7 +756,7 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
       // CASE : fresh rocksdb connecting to old offloader
       // guids are different
       // TODO : maintain delta if we start storing seq with keys on offloader
-      db.seq_ = req->seq;
+      db.lastAppliedSeq_ = req->seq;
       responseSeq = req->seq;
       responseCode = 0;
       caseString = "fresh->old";
@@ -783,12 +774,12 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
     }
     else 
     {
-      assert (db.seq_ != 0);
+      assert (db.lastAppliedSeq_ != 0);
       assert (req->seq != 0);
-      if (db.seq_ <= req->seq) 
+      if (db.lastAppliedSeq_ <= req->seq) 
       {
         // CASE : old rocksdb re-connecting to old offloader
-        responseSeq = db.seq_;
+        responseSeq = db.lastAppliedSeq_;
         db.identity_ = remoteIdentity;
         responseCode = 0;
         caseString = "old->old";
@@ -817,18 +808,22 @@ int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
 
-  err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz, db.seq_);
+  err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz, db.lastAppliedSeq_);
 
   free(resp);
 
   return err;
 }
 
+bool eof = false;
+
+void exit_handler(int signum)
+{
+  eof = true;
+}
 
 void serverWorker(int sockfd)
 {
-  bool eof = false;
-
   ReplSocket sock(sockfd);
 
   std::cout << "tid=" << gettid() << " started work on socket=" << sockfd << std::endl;
@@ -966,6 +961,11 @@ void serverWorker(int sockfd)
 int main(int argc, char* argv[])
 {
   //kDBPath.append(std::to_string(getpid()));
+  //
+  struct sigaction action;
+  memset(&action, 0, sizeof(struct sigaction));
+  action.sa_handler = exit_handler;
+  sigaction(SIGINT, &action, NULL);
 
   bool newInstance = false;
   if (argc > 1) {
@@ -1019,7 +1019,7 @@ int main(int argc, char* argv[])
 
   std::vector<std::future<void>> futVec;
 
-  while (1) {
+  while (!eof) {
 
     newSocket = accept(listenSocket, 
       (struct sockaddr *) &serverStorage, &addr_size);
@@ -1030,7 +1030,10 @@ int main(int argc, char* argv[])
     futVec.emplace_back(std::move(fut));
   }
 
-  // TODO wait on futVec
+  for (auto& fut : futVec)
+  {
+    fut.wait();
+  }
 
   close(listenSocket);
 

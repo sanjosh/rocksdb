@@ -672,12 +672,12 @@ public:
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
 
-        cachedKeys_.push(key_);
-        cachedValues_.push(value_);
-        cachedSeq_.push(resp->seq);
-
-        assert(cachedKeys_.size() == 1);
-        assert(cachedValues_.size() == 1);
+        ReplKey replKey(key_);
+        auto userKey = replKey.userKey();
+        auto seq = replKey.seq();
+        auto val = replKey.val();
+        ParsedInternalKey pkey(userKey, seq, val);
+        internalKey_.SetFrom(pkey);
 
       } else {
         valid_ = false;
@@ -787,16 +787,8 @@ public:
 
         valid_ = true;
 
-        BufferIter seqIter(resp->buf, resp->seqSz);
-        BufferIter keyIter(resp->buf + resp->seqSz, resp->keySz);
-        BufferIter valueIter(resp->buf + resp->seqSz + resp->keySz, resp->valueSz);
-
-        std::vector<SequenceNumber> seqArray;
-        seqArray.resize(resp->num_sent);
-        seqIter.readNext((char*)&seqArray[0], resp->seqSz);
-        for (auto elem : seqArray) {
-          cachedSeq_.push(elem);
-        }
+        BufferIter keyIter(resp->buf, resp->keySz);
+        BufferIter valueIter(resp->buf + resp->keySz, resp->valueSz);
 
         keyIter.readQueue(resp->num_sent, cachedKeys_);
         valueIter.readQueue(resp->num_sent, cachedValues_);
@@ -854,8 +846,14 @@ public:
         valid_ = true;
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
-        ParsedInternalKey pkey(key_, resp->seq, kTypeValue);
+
+        ReplKey replKey(key_);
+        auto userKey = replKey.userKey();
+        auto seq = replKey.seq();
+        auto val = replKey.val();
+        ParsedInternalKey pkey(userKey, seq, val);
         internalKey_.SetFrom(pkey);
+
       } else {
         valid_ = false;
       }
@@ -873,46 +871,36 @@ public:
   }
 
   // if internal key cache empty
-  //   call MultiNextInternal
-  virtual void Next() override
+  //   get more from offloader
+  void CachedNext(int direction) 
   {
-    //NextInternal(1);
     if (!cachedKeys_.size()) {
-      MultiNextInternal(1);
+      MultiNextInternal(direction);
     }
 
     if (cachedKeys_.size()) {
       key_ = cachedKeys_.front();
       value_ = cachedValues_.front();
-      auto seq = cachedSeq_.front();
   
-      ParsedInternalKey pkey(key_, seq, kTypeValue);
+      ReplKey replKey(key_);
+      auto userKey = replKey.userKey();
+      auto seq = replKey.seq();
+      auto val = replKey.val();
+      ParsedInternalKey pkey(userKey, seq, val);
       internalKey_.SetFrom(pkey);
   
       cachedKeys_.pop();
       cachedValues_.pop();
-      cachedSeq_.pop();
     }
+  }
+
+  virtual void Next() override
+  {
+    CachedNext(1);
   }
   virtual void Prev() override 
   {
-    // NextInternal(-1);
-    if (!cachedKeys_.size()) {
-      MultiNextInternal(-1);
-    }
-
-    if (cachedKeys_.size()) {
-      key_ = cachedKeys_.front();
-      value_ = cachedValues_.front();
-      auto seq = cachedSeq_.front();
-  
-      ParsedInternalKey pkey(key_, seq, kTypeValue);
-      internalKey_.SetFrom(pkey);
-  
-      cachedKeys_.pop();
-      cachedValues_.pop();
-      cachedSeq_.pop();
-    }
+    CachedNext(-1);
   }
   virtual Slice key() const override
   {
@@ -946,14 +934,15 @@ public:
 
   uint32_t cfid_;
   std::shared_ptr<rocksdb::Logger> logger = nullptr;
-  SequenceNumber seqnum_;
+
+  // original seqnum on which seek was done
+  SequenceNumber seqnum_; 
 
   int32_t remote_cursor_id_ = -1; // TODO define invalid id
 
   // internal cache of keys
   std::queue<std::string> cachedKeys_;
   std::queue<std::string> cachedValues_;
-  std::queue<SequenceNumber> cachedSeq_;
 
   InternalKey internalKey_; 
   std::string key_;
