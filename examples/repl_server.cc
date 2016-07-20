@@ -335,11 +335,13 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
 
+    /*
     std::cout << "INSERT cf=" << cfid 
       << ":key=" << kSlice.ToString()
       << ":key_size=" << kSlice.size()
       << ":value=" << std::string(value.data(), 10)
       << std::endl;
+      */
 
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
 
@@ -355,11 +357,13 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
     
+    /*
     std::cout << "INSERT cf="  << kDefaultColumnFamilyIdx
       << ":key=" << kSlice.ToString()
       << ":key_size=" << kSlice.size()
       << ":value=" << std::string(value.data(), 10)
       << std::endl;
+      */
 
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
 

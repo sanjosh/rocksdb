@@ -18,7 +18,7 @@ using namespace rocksdb;
 
 std::string kDBPath = "/tmp/rocksdb_repl_example";
 
-static size_t NumKeys = 100L;
+static size_t NumKeys = 100000L;
 
 static void waitForUser()
 {
@@ -93,13 +93,19 @@ static void DoIter()
   decltype(NumKeys) count = 0;
   for (iter->Seek(seekKey); iter->Valid(); iter->Next())
   {
+    /*
     std::cout 
       << "Cursor key=" << std::hex << iter->key().ToString() << std::dec
       << " value=" << iter->value().ToString().substr(0, 10)
       << std::endl;
+      */
     count ++;
   }
-  std::cout << "num keys in iter=" << count << std::endl;
+  if (count == NumKeys) {
+    std::cout << "got all keys" << std::endl;
+  } else {
+    std::cout << "num keys in iter=" << count << std::endl;
+  }
   delete iter;
   //db->ReleaseSnapshot(snap);
 }

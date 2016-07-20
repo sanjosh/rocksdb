@@ -68,7 +68,9 @@ BufferIter::BufferIter(char* buf, size_t insz)
     allocsz = InitialAllocSize;
   } 
   buffer.resize(allocsz);
-  memcpy(&buffer[0], buf, insz);
+  if (insz) {
+    memcpy(buffer.data(), buf, insz);
+  }
 }
 
 BufferIter::~BufferIter()
@@ -82,6 +84,7 @@ int BufferIter::readNext(char* outbuf, size_t outsz)
     offset += outsz;
     return 0;
   } else {
+    assert("unexpected" == 0);
     return -1;
   }
 }
@@ -93,21 +96,23 @@ int BufferIter::writeNext(const char* inbuf, size_t insz)
 
     do {
       sz = sz << 1;
-    } while (offset + insz < sz);
+    } while (offset + insz > sz);
 
     buffer.resize(sz);
   }
+  assert(offset + insz <= buffer.size());
   memcpy(buffer.data() + offset, inbuf, insz);
   offset += insz;
+  assert(offset < buffer.size());
   return 0;
 }
 
 int BufferIter::readQueue(size_t numEnt, std::queue<std::string>& stringArray)
 {
-  std::vector<uint32_t> sizeArray;
+  std::vector<size_t> sizeArray;
   sizeArray.resize(numEnt);
 
-  readNext((char*)&sizeArray[0], sizeof(uint32_t) * sizeArray.size());
+  readNext((char*)&sizeArray[0], (sizeof(decltype(sizeArray)::value_type) * sizeArray.size()));
 
   std::vector<char> buf;
   for (auto elem : sizeArray)
@@ -129,15 +134,16 @@ ssize_t BufferIter::writeVector(const std::vector<std::string>& stringArray)
 {
   decltype(offset) old_offset = offset;
 
-  std::vector<uint32_t> sizeArray;
+  std::vector<size_t> sizeArray;
 
   for (auto& elem : stringArray)
   {
     sizeArray.push_back(elem.size());
   }
 
-  const size_t arraySz = sizeof(uint32_t) * sizeArray.size();
+  const size_t arraySz = sizeof(decltype(sizeArray)::value_type) * sizeArray.size();
 
+  // first we write out an array containing sizes of each string
   writeNext((char*)sizeArray.data(), arraySz);
 
   for (auto& elem : stringArray)
@@ -145,6 +151,7 @@ ssize_t BufferIter::writeVector(const std::vector<std::string>& stringArray)
     writeNext(elem.c_str(), elem.size());
   }
 
+  assert(offset - old_offset > arraySz);
   return (offset - old_offset);
 }
 // =============================================
@@ -661,10 +668,17 @@ public:
       if ((resp->status == Status::Code::kOk) && 
           (!resp->is_eof)) {
         valid_ = true;
+
         key_ = resp->kv.getKey();
         value_ = resp->kv.getValue();
-        ParsedInternalKey pkey(key_, resp->seq, kTypeValue);
-        internalKey_.SetFrom(pkey);
+
+        cachedKeys_.push(key_);
+        cachedValues_.push(value_);
+        cachedSeq_.push(resp->seq);
+
+        assert(cachedKeys_.size() == 1);
+        assert(cachedValues_.size() == 1);
+
       } else {
         valid_ = false;
       }
