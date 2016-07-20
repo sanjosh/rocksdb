@@ -77,6 +77,109 @@ struct ReplSocket
   ~ReplSocket();
 };
 
+/**
+ * Either in the key or value, we must retain the
+ * original sequence number and ValueType so
+ * it can be returned to the client-side rocksdb 
+ * during iteration or lookup
+ */
+struct ReplKey
+{
+  // Current format
+  // SequenceNumber - 8 byte
+  // ValueType - 4 byte
+  // Length of string 
+  // Actual string
+  //
+  // Should put seq and val in the back of the string
+  // rather than front
+  std::string rep;
+
+  ReplKey(const std::string& key, SequenceNumber seqnum, ValueType value)
+  {
+    PutFixed64(&rep, seqnum);
+    PutFixed32(&rep, value);
+    rep.append(key);
+  }
+
+  ReplKey(const rocksdb::Slice& key, SequenceNumber seqnum, ValueType value)
+  {
+    PutFixed64(&rep, seqnum);
+    PutFixed32(&rep, value);
+    rep.append(key.data(), key.size());
+  }
+
+  ReplKey(const Slice& s) 
+  {
+    rep.assign(s.data(), s.size());
+  }
+
+  SequenceNumber seq() const
+  {
+    Slice s(rep.data(), sizeof(uint64_t));
+    SequenceNumber ret;
+    GetFixed64(&s, &ret);
+    return ret;
+  }
+
+  std::string userKey() const
+  {
+    return std::string(rep.data() + sizeof(uint64_t) + sizeof(uint32_t), 
+      rep.size() - (sizeof(uint64_t) + sizeof(uint32_t)));
+  }
+
+  ValueType val() const
+  {
+    Slice s(rep.data() + sizeof(uint64_t), sizeof(uint32_t));
+    uint32_t value;
+    GetVarint32(&s, &value);
+    return static_cast<ValueType>(value);
+  }
+
+  Slice Encode() const
+  {
+    return rep;
+  }
+};
+
+struct ReplKeyComparator : public rocksdb::Comparator 
+{
+  virtual int Compare(const Slice& as, const Slice& bs) const override
+  {
+    ReplKey a(as);
+    ReplKey b(bs);
+
+    auto akey = a.userKey();
+    auto bkey = b.userKey();
+
+    int cmp = akey.compare(bkey);
+    if (cmp < 0) {
+      return -1;
+    } else if (cmp > 0) {
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+
+  virtual const char* Name() const override
+  {
+    return "repl-rocks";
+  }
+
+  virtual void FindShortestSeparator(
+    std::string* start,
+    const Slice& limit) const override
+  {
+  }
+
+  virtual void FindShortSuccessor(std::string* key) const override
+  {
+  }
+
+};
+
+
 struct ReplThreadInfo {
 
   rocksdb::DBImpl* db = nullptr;

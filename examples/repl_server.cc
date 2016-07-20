@@ -28,6 +28,7 @@
 
 using rocksdb::WriteBatch;
 using rocksdb::ReplSocket;
+
 using rocksdb::ReplWALUpdate;
 using rocksdb::ReplRequestHeader;
 using rocksdb::ReplResponseHeader;
@@ -39,18 +40,24 @@ using rocksdb::ReplRequestOp;
 using rocksdb::ReplResponseOp;
 using rocksdb::ReplCursorOpenReq;
 using rocksdb::ReplCursorOpenResp;
+
 using rocksdb::Slice;
 using rocksdb::Status;
 using rocksdb::ValueType;
 using rocksdb::SequenceNumber;
 using rocksdb::ColumnFamilyHandle;
+
 using rocksdb::InternalKey;
 using rocksdb::BufferIter;
 using rocksdb::LookupKey;
+
 using rocksdb::PutFixed64;
 using rocksdb::PutFixed32;
 using rocksdb::GetFixed64;
 using rocksdb::GetVarint32;
+
+using rocksdb::ReplKey;
+using rocksdb::ReplKeyComparator;
 
 /**
  * Store database GUID <-> last_seq, cf
@@ -76,109 +83,6 @@ using rocksdb::GetVarint32;
  *
  * Only apply ops greater than seqnum
  */
-
-
-/**
- * Either in the key or value, we must retain the
- * original sequence number and ValueType so
- * it can be returned to the client-side rocksdb 
- * during iteration or lookup
- */
-struct MemKey
-{
-  // Current format
-  // SequenceNumber - 8 byte
-  // ValueType - 4 byte
-  // Length of string 
-  // Actual string
-  //
-  // Should put seq and val in the back of the string
-  // rather than front
-  std::string rep;
-
-  MemKey(const std::string& key, SequenceNumber seq, ValueType val)
-  {
-    PutFixed64(&rep, seq);
-    PutFixed32(&rep, val);
-    rep.append(key);
-  }
-
-  MemKey(const rocksdb::Slice& key, SequenceNumber seq, ValueType val)
-  {
-    PutFixed64(&rep, seq);
-    PutFixed32(&rep, val);
-    rep.append(key.data(), key.size());
-  }
-
-  MemKey(const Slice& s) 
-  {
-    rep.assign(s.data(), s.size());
-  }
-
-  SequenceNumber seq() const
-  {
-    Slice s(rep.data(), sizeof(uint64_t));
-    SequenceNumber ret;
-    GetFixed64(&s, &ret);
-    return ret;
-  }
-
-  std::string userKey() const
-  {
-    return std::string(rep.data() + sizeof(uint64_t) + sizeof(uint32_t), 
-      rep.size() - (sizeof(uint64_t) + sizeof(uint32_t)));
-  }
-
-  ValueType val() const
-  {
-    Slice s(rep.data() + sizeof(uint64_t), sizeof(uint32_t));
-    uint32_t val;
-    GetVarint32(&s, &val);
-    return static_cast<ValueType>(val);
-  }
-
-  Slice Encode() const
-  {
-    return rep;
-  }
-};
-
-struct MemKeyCompare : public rocksdb::Comparator 
-{
-  virtual int Compare(const Slice& as, const Slice& bs) const override
-  {
-    MemKey a(as);
-    MemKey b(bs);
-
-    auto akey = a.userKey();
-    auto bkey = b.userKey();
-
-    int cmp = akey.compare(bkey);
-    if (cmp < 0) {
-      return -1;
-    } else if (cmp > 0) {
-      return 1;
-    } else {
-      return 0;
-    }
-  }
-
-  virtual const char* Name() const override
-  {
-    return "repl-rocks";
-  }
-
-  virtual void FindShortestSeparator(
-    std::string* start,
-    const Slice& limit) const override
-  {
-  }
-
-  virtual void FindShortSuccessor(std::string* key) const override
-  {
-  }
-
-};
 
 
 static constexpr uint32_t kDefaultColumnFamilyIdx = 0; // TODO
@@ -208,7 +112,7 @@ struct DBWrapper {
     rocksdb::Status status;
 
     rocksdb::Options options;
-    options.comparator = new MemKeyCompare();
+    options.comparator = new ReplKeyComparator();
 
     if (newInstance) {
 
@@ -269,7 +173,7 @@ struct DBWrapper {
     if (iter == handles_.end()) {
       // TODO this should be done on getting VersionEdit in WAL
       rocksdb::ColumnFamilyOptions column_family_options;
-      column_family_options.comparator = new MemKeyCompare();
+      column_family_options.comparator = new ReplKeyComparator();
 
       auto status = rocksdb_->CreateColumnFamily(column_family_options,
         std::to_string(cfid), &cfptr);
@@ -332,7 +236,7 @@ struct MapInserter : public WriteBatch::Handler {
       }
     } while (cf == nullptr); 
 
-    MemKey k(key, seq_++, ValueType::kTypeValue);
+    ReplKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
 
     /*
@@ -354,7 +258,7 @@ struct MapInserter : public WriteBatch::Handler {
     const Slice& value) override
   {
 
-    MemKey k(key, seq_++, ValueType::kTypeValue);
+    ReplKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
     
     /*
@@ -383,16 +287,17 @@ struct MapInserter : public WriteBatch::Handler {
       }
     } while (cf == nullptr); 
 
-    MemKey k(key, seq_++, ValueType::kTypeDeletion);
+    ReplKey k(key, seq_++, ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
+    rocksdb::Slice value;
     /*
     std::cout << "DELETE cf=" << cfid
       << ":key=" << key.ToString()
       << std::endl;
       */
 
-    // delete or "insert a tombstone" here ?
-    db.rocksdb_->Delete(rocksdb::WriteOptions(), cf, kSlice);
+    // insert a tombstone
+    db.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
 
     return Status::OK();
   }
@@ -400,14 +305,16 @@ struct MapInserter : public WriteBatch::Handler {
   virtual void Delete(const Slice& key)
   {
 
-    MemKey k(key, seq_++, rocksdb::ValueType::kTypeDeletion);
+    ReplKey k(key, seq_++, rocksdb::ValueType::kTypeDeletion);
     rocksdb::Slice kSlice = k.Encode();
+    rocksdb::Slice value;
     /*
     std::cout << "DELETE cf="  << kDefaultColumnFamilyIdx
       << ":key=" << key.ToString()
       << std::endl;
       */
-    db.rocksdb_->Delete(rocksdb::WriteOptions(), kSlice);
+    // insert a tombstone
+    db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
   }
 
   virtual void LogData(const Slice& blob)
@@ -448,7 +355,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
     assert(req->seekLast == false);
     assert(req->seekFirst == false);
     inputUserKey = std::string(req->buf, extraSz);
-    MemKey k(inputUserKey, req->seq, ValueType::kTypeValue);
+    ReplKey k(inputUserKey, req->seq, ValueType::kTypeValue);
     iter->Seek(k.Encode());
   } else if (req->seekLast == true) {
     iter->SeekToLast();
@@ -458,7 +365,7 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   }
 
   if (iter->Valid()) {
-    MemKey memkey = iter->key();
+    ReplKey memkey = iter->key();
     userKey = memkey.userKey();
     seq = memkey.seq();
     value = iter->value().ToString();
@@ -473,7 +380,6 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
     resp->kv.putValue(value);
     resp->seq = seq;
     resp->is_eof = false;
-    /*
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
       << " key=" << userKey
@@ -481,15 +387,12 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
       << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof 
       << std::endl;
-      */
   } else {
     resp->is_eof = true;
-    /*
     std::cout << "OPENCURSOR id=" << resp->cursor_id 
       << " cfid=" << req->cfid
       << " seek_key=" << inputUserKey
       << " eof=" << resp->is_eof << std::endl;
-      */
   }
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz, db.seq_);
@@ -529,7 +432,7 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
       } 
   
       if (iter->Valid()) {
-        MemKey memkey = iter->key();
+        ReplKey memkey = iter->key();
         keyArray.push_back(memkey.userKey());
         seqArray.push_back(memkey.seq());
         valueArray.push_back(iter->value().ToString());
@@ -623,7 +526,7 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
     }
   
     if (iter->Valid()) {
-      MemKey memkey = iter->key();
+      ReplKey memkey = iter->key();
       userKey = memkey.userKey();
       seq = memkey.seq();
       value = iter->value().ToString();
@@ -681,7 +584,7 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   }
   resp->cursor_id = req->cursor_id;
 
-  //std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
+  std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz, db.seq_);
 
@@ -727,7 +630,7 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
 
   int ret = 0;
 
-  MemKey internalKey(lookupKey, db.seq_, rocksdb::kValueTypeForSeek);
+  ReplKey internalKey(lookupKey, db.seq_, rocksdb::kValueTypeForSeek);
 
   if (cf != nullptr)
   {
