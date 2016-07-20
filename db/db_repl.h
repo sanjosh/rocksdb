@@ -6,6 +6,11 @@
 #include <atomic>
 #include <list>
 
+#include <vector>
+#include <queue>
+#include <cassert>
+#include <string.h>
+
 namespace rocksdb {
 
 class Logger;
@@ -31,7 +36,8 @@ enum ReplRequestOp
 
   OP_CURSOR_OPEN = 202,
   OP_CURSOR_NEXT = 203,
-  OP_CURSOR_CLOSE = 204,
+  OP_CURSOR_MULTI_NEXT = 204,
+  OP_CURSOR_CLOSE = 205,
 
   RESP_INIT1 = RESP_BEGIN + OP_INIT1,
   // add for wal?
@@ -39,11 +45,11 @@ enum ReplRequestOp
 
   RESP_CURSOR_OPEN = RESP_BEGIN + OP_CURSOR_OPEN,
   RESP_CURSOR_NEXT = RESP_BEGIN + OP_CURSOR_NEXT,
+  RESP_CURSOR_MULTI_NEXT = RESP_BEGIN + OP_CURSOR_MULTI_NEXT,
   RESP_CURSOR_CLOSE = RESP_BEGIN + OP_CURSOR_CLOSE,
 };
 
 typedef ReplRequestOp ReplResponseOp;
-
 
 struct ReplSocket
 {
@@ -122,8 +128,31 @@ struct ReplThreadInfo {
 
   bool IsReplicated() const
   {
-    return ((writeSock.sock_fd != -1) && (readSock.sock_fd != -1));
+    return (writeSock.IsOpen() && readSock.IsOpen());
   }
+};
+
+/*
+ * manages serialization buffer
+ */
+struct BufferIter
+{
+  std::vector<char> buffer;
+  size_t offset{0};
+
+  static constexpr size_t InitialAllocSize = 1024;
+
+  BufferIter(char* buf, size_t insz);
+  virtual ~BufferIter();
+
+  int readNext(char* outbuf, size_t outsz);
+  int writeNext(const char* inbuf, size_t insz);
+
+  int readQueue(size_t numEnt, std::queue<std::string>& stringArray);
+  ssize_t writeVector(const std::vector<std::string>& stringArray);
+
+  const char* data() const { return buffer.data(); }
+  size_t size() const { return offset; }
 };
 
 struct KeyValue
@@ -264,6 +293,34 @@ struct ReplCursorNextResp
   bool is_eof;
   SequenceNumber seq;
   KeyValue kv;
+};
+
+struct ReplCursorMultiNextReq
+{
+  CursorId cursor_id;
+  // max entries to send in the response buffer
+  uint32_t num_requested;
+  // 1 for next, -1 for prev
+  int direction{0}; 
+};
+
+struct ReplCursorMultiNextResp
+{
+  CursorId cursor_id;
+  Status::Code status;
+  bool is_eof;
+
+  // number of entries in each of 3 arrays serialized below
+  uint32_t num_sent; 
+
+  size_t seqSz;
+  size_t keySz;
+  size_t valueSz;
+  char buf[0];
+  // followed by
+  // array of seq num of byte size=seqSz
+  // array of keys of byte size=keySz
+  // array of values of byte size=valueSz
 };
 
 struct ReplCursorCloseReq

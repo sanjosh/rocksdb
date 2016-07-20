@@ -4546,7 +4546,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
 
       Slice log_entry = WriteBatchInternal::Contents(merged_batch);
       status = logs_.back().writer->AddRecord(log_entry);
-      if (status.ok()) {
+      if (status.ok() && db_options_.repl_addr.size())   {
         status = repl_thread_info_.AddToReplLog(*merged_batch);
       }
       total_log_size_ += log_entry.size();
@@ -4577,7 +4577,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
           status = directories_.GetWalDir()->Fsync();
         }
       }
-      if (status.ok()) {
+      if (status.ok() && db_options_.repl_addr.size()) {
         // ship the logs to offloader
         // On offloader, sync to disk must be aligned with local sync
         // TODO need to develop proper 2pc here

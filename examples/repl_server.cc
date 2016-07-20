@@ -45,6 +45,7 @@ using rocksdb::ValueType;
 using rocksdb::SequenceNumber;
 using rocksdb::ColumnFamilyHandle;
 using rocksdb::InternalKey;
+using rocksdb::BufferIter;
 using rocksdb::LookupKey;
 using rocksdb::PutFixed64;
 using rocksdb::PutFixed32;
@@ -334,13 +335,11 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
 
-    /*
     std::cout << "INSERT cf=" << cfid 
       << ":key=" << kSlice.ToString()
       << ":key_size=" << kSlice.size()
-      << ":value=" << value.ToString()
+      << ":value=" << std::string(value.data(), 10)
       << std::endl;
-    */
 
     auto status = db_.rocksdb_->Put(rocksdb::WriteOptions(), cf, kSlice, value);
 
@@ -356,13 +355,11 @@ struct MapInserter : public WriteBatch::Handler {
     MemKey k(key, seq_++, ValueType::kTypeValue);
     rocksdb::Slice kSlice = k.Encode();
     
-    /*
     std::cout << "INSERT cf="  << kDefaultColumnFamilyIdx
       << ":key=" << kSlice.ToString()
       << ":key_size=" << kSlice.size()
-      << ":value=" << value.ToString()
+      << ":value=" << std::string(value.data(), 10)
       << std::endl;
-      */
 
     auto status = db.rocksdb_->Put(rocksdb::WriteOptions(), kSlice, value);
 
@@ -493,6 +490,105 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz, db.seq_);
 
+  free(resp);
+
+  return err;
+}
+
+int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* req, int extraSz)
+{
+  std::string userKey;
+  std::string value;
+  SequenceNumber seq{0};
+
+  rocksdb::Iterator* iter = nullptr;
+
+  auto mapIter = db.openCursors_.find(req->cursor_id);
+  if (mapIter != db.openCursors_.end()) {
+    iter = mapIter->second;
+  }
+
+  std::vector<std::string> keyArray;
+  std::vector<std::string> valueArray;
+  std::vector<SequenceNumber> seqArray;
+
+  if (((req->direction == 1) || (req->direction == -1)) &&
+    (iter != nullptr)) {
+
+    for (decltype(req->num_requested) idx = 0; idx < req->num_requested; idx ++) {
+
+      if (req->direction == 1) {
+        iter->Next();
+      } else {
+        assert(req->direction == -1);
+        iter->Prev();
+      } 
+  
+      if (iter->Valid()) {
+        MemKey memkey = iter->key();
+        keyArray.push_back(memkey.userKey());
+        seqArray.push_back(memkey.seq());
+        valueArray.push_back(iter->value().ToString());
+      } else {
+        break;
+      }
+    } 
+  }
+  
+  rocksdb::ReplCursorMultiNextResp* resp = nullptr;
+
+  size_t totalSz = sizeof(*resp);
+  resp = (rocksdb::ReplCursorMultiNextResp*)malloc(totalSz);
+  resp->cursor_id = req->cursor_id;
+  resp->num_sent = 0;
+  resp->seqSz = resp->keySz = resp->valueSz = 0;
+
+  // iter has buffer which shouldnt get freed before write
+  BufferIter bufIter(nullptr, 0);
+
+  if (!iter) {
+    resp->is_eof = true;
+    resp->status = Status::Code::kNotFound;
+    std::cout << "NEXTCURSOR id=" << resp->cursor_id << " not found" << std::endl;
+  } else if (keyArray.size()) {
+    resp->status = Status::Code::kOk;
+    resp->num_sent = seqArray.size();
+    resp->is_eof = false;
+
+    // serialize seqArray, keyArray, valueArray
+    resp->seqSz = seqArray.size() * sizeof(decltype(seqArray)::value_type);
+    bufIter.writeNext((char*)&seqArray[0], resp->seqSz);
+
+    resp->keySz = bufIter.writeVector(keyArray);
+    resp->valueSz = bufIter.writeVector(valueArray);
+
+    assert(resp->seqSz + resp->keySz + resp->valueSz == bufIter.size());
+    totalSz += bufIter.size();
+    resp = (rocksdb::ReplCursorMultiNextResp*)realloc(resp, totalSz);
+    memcpy(resp->buf, bufIter.data(), bufIter.size());
+
+  } else {
+    resp->status = Status::Code::kOk;
+    resp->is_eof = true;
+  }
+
+  /*
+  std::cout << "NEXTCURSOR id=" << resp->cursor_id 
+    << " seq=" << seq
+    << " direction=" << req->direction
+    << " eof=" << resp->is_eof 
+    << " key=" << userKey
+    << " value=" << value.substr(0, 10)
+    << std::endl;
+    */
+
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_MULTI_NEXT, 
+    resp, 
+    totalSz, 
+    db.seq_);
+
+  free(resp);
+
   return err;
 }
 
@@ -560,6 +656,8 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz, db.seq_);
 
+  free(resp);
+
   return err;
 }
 
@@ -582,6 +680,8 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   //std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz, db.seq_);
+
+  free(resp);
 
   return err;
 }
@@ -883,7 +983,7 @@ void serverWorker(int sockfd)
         if (ret != 0) 
         {
           eof = true;
-          std::cout << "got lookup error" << std::endl;
+          std::cout << "got wal error" << std::endl;
           break;
         }
         break;
@@ -903,6 +1003,20 @@ void serverWorker(int sockfd)
         }
         break;
       }
+      case rocksdb::ReplRequestOp::OP_CURSOR_MULTI_NEXT :
+      {
+        rocksdb::ReplCursorMultiNextReq* req = (rocksdb::ReplCursorMultiNextReq*)void_req;
+
+        int ret = processCursorMultiNext(sock, req, returnSz - sizeof(*req));
+        free(req);
+        if (ret != 0) 
+        {
+          eof = true;
+          std::cout << "got multi next error" << std::endl;
+          break;
+        }
+        break;
+      }
       case rocksdb::ReplRequestOp::OP_CURSOR_NEXT :
       {
         rocksdb::ReplCursorNextReq* req = (rocksdb::ReplCursorNextReq*)void_req;
@@ -912,7 +1026,7 @@ void serverWorker(int sockfd)
         if (ret != 0) 
         {
           eof = true;
-          std::cout << "got lookup error" << std::endl;
+          std::cout << "got next error" << std::endl;
           break;
         }
         break;
@@ -926,7 +1040,7 @@ void serverWorker(int sockfd)
         if (ret != 0) 
         {
           eof = true;
-          std::cout << "got lookup error" << std::endl;
+          std::cout << "got close error" << std::endl;
           break;
         }
         break;

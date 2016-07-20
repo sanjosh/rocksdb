@@ -59,6 +59,95 @@ static ssize_t readWrap(int fd, char* buf, size_t count)
   return partialReadSz;
 }
 
+// =============================================
+
+BufferIter::BufferIter(char* buf, size_t insz)
+{
+  size_t allocsz = insz;
+  if (insz < InitialAllocSize) {
+    allocsz = InitialAllocSize;
+  } 
+  buffer.resize(allocsz);
+  memcpy(&buffer[0], buf, insz);
+}
+
+BufferIter::~BufferIter()
+{
+}
+
+int BufferIter::readNext(char* outbuf, size_t outsz)
+{
+  if (offset + outsz <= buffer.size()) {
+    memcpy(outbuf, buffer.data() + offset, outsz);
+    offset += outsz;
+    return 0;
+  } else {
+    return -1;
+  }
+}
+
+int BufferIter::writeNext(const char* inbuf, size_t insz)
+{
+  if (offset + insz > buffer.size()) {
+    size_t sz = buffer.size();
+
+    do {
+      sz = sz << 1;
+    } while (offset + insz < sz);
+
+    buffer.resize(sz);
+  }
+  memcpy(buffer.data() + offset, inbuf, insz);
+  offset += insz;
+  return 0;
+}
+
+int BufferIter::readQueue(size_t numEnt, std::queue<std::string>& stringArray)
+{
+  std::vector<uint32_t> sizeArray;
+  sizeArray.resize(numEnt);
+
+  readNext((char*)&sizeArray[0], sizeof(uint32_t) * sizeArray.size());
+
+  std::vector<char> buf;
+  for (auto elem : sizeArray)
+  {
+    buf.resize(elem);
+    bzero(&buf[0], elem);
+    readNext(buf.data(), elem);
+    stringArray.emplace(buf.data(), elem);
+  }
+
+  return 0;
+}
+
+
+/* 
+ * @return the size of serialized buffer 
+ */
+ssize_t BufferIter::writeVector(const std::vector<std::string>& stringArray)
+{
+  decltype(offset) old_offset = offset;
+
+  std::vector<uint32_t> sizeArray;
+
+  for (auto& elem : stringArray)
+  {
+    sizeArray.push_back(elem.size());
+  }
+
+  const size_t arraySz = sizeof(uint32_t) * sizeArray.size();
+
+  writeNext((char*)sizeArray.data(), arraySz);
+
+  for (auto& elem : stringArray)
+  {
+    writeNext(elem.c_str(), elem.size());
+  }
+
+  return (offset - old_offset);
+}
+// =============================================
 
 ReplSocket::ReplSocket()
 {
@@ -645,6 +734,77 @@ public:
     free(oc);
   }
 
+  void MultiNextInternal(int direction) 
+  {
+    ReplThreadInfo* t = &repl_thread_info_;
+
+    int err = 0;
+    ReplCursorMultiNextReq* oc = (ReplCursorMultiNextReq*)malloc(sizeof(ReplCursorMultiNextReq));
+    const ssize_t totalSz = sizeof(ReplCursorMultiNextReq);
+    oc->cursor_id = remote_cursor_id_;
+    oc->direction = direction;
+    oc->num_requested = 100;
+
+    ReplCursorMultiNextResp* resp{nullptr};
+
+    do {
+
+      err = t->readSock.writeSocket(OP_CURSOR_MULTI_NEXT, oc, totalSz, 0);
+      if (err < 0) {
+        break;
+      }
+
+      ssize_t readSz;
+      ReplResponseOp op;
+
+      err = t->readSock.readSocket(op, (void**)&resp, readSz, &t->lastAckedSequence);
+
+      if (op != RESP_CURSOR_MULTI_NEXT || err < 0) {
+        valid_ = false;
+        break;
+      }
+
+      // TODO check resp->cursor_id matches with request
+
+      assert(readSz == (ssize_t)(sizeof(*resp) + resp->seqSz + resp->keySz + resp->valueSz));
+
+      if ((resp->status == Status::Code::kOk) && 
+          (!resp->is_eof)) {
+
+        valid_ = true;
+
+        BufferIter seqIter(resp->buf, resp->seqSz);
+        BufferIter keyIter(resp->buf + resp->seqSz, resp->keySz);
+        BufferIter valueIter(resp->buf + resp->seqSz + resp->keySz, resp->valueSz);
+
+        std::vector<SequenceNumber> seqArray;
+        seqArray.resize(resp->num_sent);
+        seqIter.readNext((char*)&seqArray[0], resp->seqSz);
+        for (auto elem : seqArray) {
+          cachedSeq_.push(elem);
+        }
+
+        keyIter.readQueue(resp->num_sent, cachedKeys_);
+        valueIter.readQueue(resp->num_sent, cachedValues_);
+
+        assert(cachedKeys_.size() == resp->num_sent);
+        assert(cachedValues_.size() == resp->num_sent);
+
+      } else {
+        valid_ = false;
+      }
+
+      /*
+      Log(InfoLogLevel::INFO_LEVEL, logger, 
+          "cursor next got cfid=%d valid=%d key=%s value=%s seq=%llu", 
+          cfid_, valid_, key_.c_str(), value_.c_str(), resp->seq);
+          */
+
+    } while (0);
+    
+    free(resp);
+    free(oc);
+  }
 
   void NextInternal(int direction) 
   {
@@ -698,13 +858,47 @@ public:
     free(oc);
   }
 
+  // if internal key cache empty
+  //   call MultiNextInternal
   virtual void Next() override
   {
-    NextInternal(1);
+    //NextInternal(1);
+    if (!cachedKeys_.size()) {
+      MultiNextInternal(1);
+    }
+
+    if (cachedKeys_.size()) {
+      key_ = cachedKeys_.front();
+      value_ = cachedValues_.front();
+      auto seq = cachedSeq_.front();
+  
+      ParsedInternalKey pkey(key_, seq, kTypeValue);
+      internalKey_.SetFrom(pkey);
+  
+      cachedKeys_.pop();
+      cachedValues_.pop();
+      cachedSeq_.pop();
+    }
   }
   virtual void Prev() override 
   {
-    NextInternal(-1);
+    // NextInternal(-1);
+    if (!cachedKeys_.size()) {
+      MultiNextInternal(-1);
+    }
+
+    if (cachedKeys_.size()) {
+      key_ = cachedKeys_.front();
+      value_ = cachedValues_.front();
+      auto seq = cachedSeq_.front();
+  
+      ParsedInternalKey pkey(key_, seq, kTypeValue);
+      internalKey_.SetFrom(pkey);
+  
+      cachedKeys_.pop();
+      cachedValues_.pop();
+      cachedSeq_.pop();
+    }
   }
   virtual Slice key() const override
   {
@@ -741,6 +935,11 @@ public:
   SequenceNumber seqnum_;
 
   int32_t remote_cursor_id_ = -1; // TODO define invalid id
+
+  // internal cache of keys
+  std::queue<std::string> cachedKeys_;
+  std::queue<std::string> cachedValues_;
+  std::queue<SequenceNumber> cachedSeq_;
 
   InternalKey internalKey_; 
   std::string key_;

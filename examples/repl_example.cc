@@ -18,7 +18,7 @@ using namespace rocksdb;
 
 std::string kDBPath = "/tmp/rocksdb_repl_example";
 
-static size_t NumKeys = 1000L;
+static size_t NumKeys = 100L;
 
 static void waitForUser()
 {
@@ -35,7 +35,7 @@ static void Putter()
   for (decltype(NumKeys) i = 0; i < NumKeys; i++) 
   {
     std::string key = "key_" + std::to_string(i);
-    std::string value(4096, 'a' + i);
+    std::string value(4096, 'a' + (i % 26));
     auto s = db->Put(writeOpt, key, value);
     assert(s.ok());
   }
@@ -83,9 +83,9 @@ static void Deleter()
 
 static void DoIter()
 {
-  auto snap = db->GetSnapshot();
+  //auto snap = db->GetSnapshot();
   rocksdb::ReadOptions read_options;
-  read_options.snapshot = snap;
+  //read_options.snapshot = snap;
 
   auto iter = db->NewIterator(read_options);
   //std::string seekKey = "key_3";
@@ -93,17 +93,15 @@ static void DoIter()
   decltype(NumKeys) count = 0;
   for (iter->Seek(seekKey); iter->Valid(); iter->Next())
   {
-    /*
     std::cout 
       << "Cursor key=" << std::hex << iter->key().ToString() << std::dec
       << " value=" << iter->value().ToString().substr(0, 10)
       << std::endl;
-    */
     count ++;
   }
   std::cout << "num keys in iter=" << count << std::endl;
   delete iter;
-  db->ReleaseSnapshot(snap);
+  //db->ReleaseSnapshot(snap);
 }
 
 bool eof = false;
@@ -144,6 +142,10 @@ int main() {
 
   waitForUser();
 
+  Putter();
+  DoIter();
+
+  /*
   auto write_fut = std::async(std::launch::async,
       WriterThread);
 
@@ -153,11 +155,9 @@ int main() {
   {
     std::cout << "start read round=" << i++ << std::endl;
 
-    /*
-    auto fut1 = std::async(std::launch::async,
-      DoIter);
-    fut1.wait();
-    */
+    //auto fut1 = std::async(std::launch::async,
+      //DoIter);
+    //fut1.wait();
 
     auto fut2 = std::async(std::launch::async,
       Getter);
@@ -167,6 +167,7 @@ int main() {
   eof = true;
 
   write_fut.wait();
+  */
 
   delete db;
 
