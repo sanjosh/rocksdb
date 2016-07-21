@@ -462,7 +462,7 @@ int processCursorMultiNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
   } else if (keyArray.size()) {
     resp->status = Status::Code::kOk;
     resp->num_sent = keyArray.size();
-    resp->is_eof = iter->Valid();
+    resp->is_eof = !iter->Valid();
 
     resp->keySz = bufIter.writeVector(keyArray);
     resp->valueSz = bufIter.writeVector(valueArray);
@@ -477,15 +477,11 @@ int processCursorMultiNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
     resp->is_eof = true;
   }
 
-  /*
-  std::cout << "NEXTCURSOR id=" << resp->cursor_id 
-    << " seq=" << seq
-    << " direction=" << req->direction
-    << " eof=" << resp->is_eof 
-    << " key=" << userKey
-    << " value=" << value.substr(0, 10)
-    << std::endl;
-    */
+  //std::cout << "MULTINEXTCURSOR id=" << resp->cursor_id 
+    //<< " direction=" << req->direction
+    //<< " eof=" << resp->is_eof 
+    //<< " num_keys=" << resp->num_sent
+    //<< std::endl;
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_MULTI_NEXT, 
     resp, 
