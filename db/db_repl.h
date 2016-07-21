@@ -193,9 +193,9 @@ struct ReplThreadInfo {
   rocksdb::DBImpl* db = nullptr;
   std::shared_ptr<rocksdb::Logger> info_log = nullptr;
 
-  std::atomic<bool> stop; // replace by cv
-  std::atomic<bool> has_stopped;
-  std::atomic<bool> started;
+  std::atomic<bool> stop{false}; // replace by cv
+  std::atomic<bool> has_stopped{false};
+  std::atomic<bool> started{false};
 
   // writeSock is where all wal updates are written
   ReplSocket writeSock;

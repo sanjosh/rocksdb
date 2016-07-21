@@ -343,6 +343,8 @@ int ReplThreadInfo::initialize(const std::string& guid,
       break;
     }
 
+    free(initReq);
+
     ReplDBResp* lresp;
     ssize_t readSz = 0;
     ReplResponseOp op = OP_WILDCARD;
@@ -761,6 +763,8 @@ public:
 
     ReplCursorMultiNextResp* resp{nullptr};
 
+    assert(is_remote_eof_ == false);
+
     do {
 
       err = t->readSock.writeSocket(OP_CURSOR_MULTI_NEXT, oc, totalSz, 0);
@@ -780,21 +784,27 @@ public:
 
       // TODO check resp->cursor_id matches with request
 
-      assert(readSz == (ssize_t)(sizeof(*resp) + resp->seqSz + resp->keySz + resp->valueSz));
+      assert(readSz == (ssize_t)(sizeof(*resp) + resp->keySz + resp->valueSz));
 
-      if ((resp->status == Status::Code::kOk) && 
-          (!resp->is_eof)) {
+      if (resp->status == Status::Code::kOk) {
 
         valid_ = true;
 
-        BufferIter keyIter(resp->buf, resp->keySz);
-        BufferIter valueIter(resp->buf + resp->keySz, resp->valueSz);
+        if (resp->is_eof) {
+          is_remote_eof_ = true;
+        }
 
-        keyIter.readQueue(resp->num_sent, cachedKeys_);
-        valueIter.readQueue(resp->num_sent, cachedValues_);
+        if (resp->num_sent) {
 
-        assert(cachedKeys_.size() == resp->num_sent);
-        assert(cachedValues_.size() == resp->num_sent);
+          BufferIter keyIter(resp->buf, resp->keySz);
+          BufferIter valueIter(resp->buf + resp->keySz, resp->valueSz);
+  
+          keyIter.readQueue(resp->num_sent, cachedKeys_);
+          valueIter.readQueue(resp->num_sent, cachedValues_);
+  
+          assert(cachedKeys_.size() == resp->num_sent);
+          assert(cachedValues_.size() == resp->num_sent);
+        }
 
       } else {
         valid_ = false;
@@ -875,7 +885,11 @@ public:
   void CachedNext(int direction) 
   {
     if (!cachedKeys_.size()) {
-      MultiNextInternal(direction);
+      if (is_remote_eof_ == true) {
+        valid_ = false;
+      } else {
+        MultiNextInternal(direction);
+      }
     }
 
     if (cachedKeys_.size()) {
@@ -912,7 +926,8 @@ public:
   }
   virtual Status status() const override
   {
-    return remoteStatus_;
+    // TODO understand usage of this call
+    return remoteStatus_; 
   }
   virtual Status PinData() override
   {
@@ -943,6 +958,12 @@ public:
   // internal cache of keys
   std::queue<std::string> cachedKeys_;
   std::queue<std::string> cachedValues_;
+  
+  // use this flag to invalidate local iterator
+  // after last cache sent by offloader
+  // has been exhausted
+  // this flag is set and used only in MultiNext
+  bool is_remote_eof_ { false }; 
 
   InternalKey internalKey_; 
   std::string key_;
