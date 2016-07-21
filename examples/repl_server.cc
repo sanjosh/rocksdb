@@ -333,8 +333,10 @@ struct MapInserter : public WriteBatch::Handler {
 
 static int walPort = 8192;
 
-int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
+int processCursorOpen(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
+  ReplCursorOpenReq* req = (ReplCursorOpenReq*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   rocksdb::ColumnFamilyHandle* cf {nullptr};
   do {
     cf = db.openHandle(req->cfid);
@@ -403,8 +405,10 @@ int processCursorOpen(ReplSocket& sock, ReplCursorOpenReq* req, int extraSz)
   return err;
 }
 
-int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* req, int extraSz)
+int processCursorMultiNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
+  rocksdb::ReplCursorMultiNextReq* req = (rocksdb::ReplCursorMultiNextReq*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   std::string userKey;
   std::string value;
   SequenceNumber seq{0};
@@ -458,7 +462,7 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
   } else if (keyArray.size()) {
     resp->status = Status::Code::kOk;
     resp->num_sent = keyArray.size();
-    resp->is_eof = false;
+    resp->is_eof = iter->Valid();
 
     resp->keySz = bufIter.writeVector(keyArray);
     resp->valueSz = bufIter.writeVector(valueArray);
@@ -493,9 +497,10 @@ int processCursorMultiNext(ReplSocket& sock, rocksdb::ReplCursorMultiNextReq* re
   return err;
 }
 
-int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int extraSz)
+int processCursorNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
-
+  rocksdb::ReplCursorNextReq* req = (rocksdb::ReplCursorNextReq*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   rocksdb::ReplCursorNextResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
   std::string memkey;
@@ -559,8 +564,10 @@ int processCursorNext(ReplSocket& sock, rocksdb::ReplCursorNextReq* req, int ext
   return err;
 }
 
-int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int extraSz)
+int processCursorClose(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
+  rocksdb::ReplCursorCloseReq* req = (rocksdb::ReplCursorCloseReq*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   rocksdb::ReplCursorCloseResp* resp = nullptr;
   size_t totalSz = sizeof(*resp);
   resp = (rocksdb::ReplCursorCloseResp*)malloc(totalSz);
@@ -584,8 +591,10 @@ int processCursorClose(ReplSocket& sock, rocksdb::ReplCursorCloseReq* req, int e
   return err;
 }
 
-int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
+int processLookup(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
+  rocksdb::ReplLookupReq* req = (rocksdb::ReplLookupReq*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   std::string lookupKey(req->key, extraSz);
   uint32_t cfid = req->cfid;
 
@@ -666,22 +675,23 @@ int processLookup(ReplSocket& sock, ReplLookupReq* req, int extraSz)
   return err;
 }
 
-int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
+int processWAL(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
+  rocksdb::ReplWALUpdate* req = (rocksdb::ReplWALUpdate*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   int ret = 0;
+
+  //std::cout << "Got a WriteBatch"
+    //<< " seq=" << req->seq
+    //<< ":size=" << extraSz
+    //<< ":num updates in batch=" << batch.Count()
+    //<< std::endl;
 
   rocksdb::WriteBatch batch;
   rocksdb::Slice slice(req->buf, extraSz);
   // set contents of batch using Slice
   rocksdb::WriteBatchInternal::SetContents(&batch, slice);
 
-  /*
-  std::cout << "Got a WriteBatch"
-    << " seq=" << req->seq
-    << ":size=" << batch.GetDataSize()
-    << ":num updates in batch=" << batch.Count()
-    << std::endl;
-    */
 
   MapInserter handler(req->seq, db);
   batch.Iterate(&handler);
@@ -716,8 +726,10 @@ int processWAL(ReplSocket& sock, ReplWALUpdate* req, size_t extraSz)
  *    how to sync offloader if some logs were already deleted ?
  *    maybe we dont want to handle this case ?
  */
-int processInit(ReplSocket& sock, ReplDBReq* req, size_t extraSz)
+int processInit(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
+  ReplDBReq* req = (ReplDBReq*)void_req;
+  size_t extraSz = totalReadSz - sizeof(*req);
   int err = 0;
 
   std::string remoteIdentity(req->identity, req->identitySize);
@@ -822,6 +834,17 @@ void exit_handler(int signum)
   eof = true;
 }
 
+std::map<ReplRequestOp, std::function<int(ReplSocket&, void*, size_t)>> opTable =
+{
+  { rocksdb::ReplRequestOp::OP_INIT1,              processInit },
+  { rocksdb::ReplRequestOp::OP_LOOKUP,             processLookup },
+  { rocksdb::ReplRequestOp::OP_WAL,                processWAL },
+  { rocksdb::ReplRequestOp::OP_CURSOR_OPEN,        processCursorOpen },
+  { rocksdb::ReplRequestOp::OP_CURSOR_MULTI_NEXT,  processCursorMultiNext },
+  { rocksdb::ReplRequestOp::OP_CURSOR_NEXT,        processCursorNext },
+  { rocksdb::ReplRequestOp::OP_CURSOR_CLOSE,       processCursorClose },
+};
+
 void serverWorker(int sockfd)
 {
   ReplSocket sock(sockfd);
@@ -841,120 +864,34 @@ void serverWorker(int sockfd)
       break;
     }
 
-    switch (op) 
+    bool found = false;
+    for (auto iter : opTable)
     {
-      case rocksdb::ReplRequestOp::OP_INIT1 : 
-      {
-        ReplDBReq* req = (ReplDBReq*)void_req;
+      if (iter.first == op) {
 
-        int ret = processInit(sock, req, returnSz - sizeof(*req));
+        found = true;
 
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got handshake error" << std::endl;
-          break;
-        }
-        break;
-      }
-      case rocksdb::ReplRequestOp::OP_LOOKUP : 
-      {
+        auto func = iter.second;
+        int ret = func(sock, void_req, returnSz);
 
-        ReplLookupReq* req = (ReplLookupReq*)void_req;
-
-        int ret = processLookup(sock, req, returnSz - sizeof(*req));
-
-        free(req);
+        free(void_req);
 
         if (ret != 0) 
         {
           eof = true;
-          std::cout << "got lookup error" << std::endl;
-          break;
+          std::cout << "got error on op=" << op << std::endl;
         }
+
         break;
-      }
-
-      case rocksdb::ReplRequestOp::OP_WAL :
-      {
-        ReplWALUpdate* sw = (ReplWALUpdate*)void_req;
-
-        int ret = processWAL(sock, sw, returnSz - sizeof(*sw));
-        free(sw);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got wal error" << std::endl;
-          break;
-        }
-        break;
-      }
-
-      case rocksdb::ReplRequestOp::OP_CURSOR_OPEN :
-      {
-        ReplCursorOpenReq* req = (ReplCursorOpenReq*)void_req;
-
-        int ret = processCursorOpen(sock, req, returnSz - sizeof(*req));
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got lookup error" << std::endl;
-          break;
-        }
-        break;
-      }
-      case rocksdb::ReplRequestOp::OP_CURSOR_MULTI_NEXT :
-      {
-        rocksdb::ReplCursorMultiNextReq* req = (rocksdb::ReplCursorMultiNextReq*)void_req;
-
-        int ret = processCursorMultiNext(sock, req, returnSz - sizeof(*req));
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got multi next error" << std::endl;
-          break;
-        }
-        break;
-      }
-      case rocksdb::ReplRequestOp::OP_CURSOR_NEXT :
-      {
-        rocksdb::ReplCursorNextReq* req = (rocksdb::ReplCursorNextReq*)void_req;
-
-        int ret = processCursorNext(sock, req, returnSz - sizeof(*req));
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got next error" << std::endl;
-          break;
-        }
-        break;
-      }
-      case rocksdb::ReplRequestOp::OP_CURSOR_CLOSE :
-      {
-        rocksdb::ReplCursorCloseReq* req = (rocksdb::ReplCursorCloseReq*)void_req;
-
-        int ret = processCursorClose(sock, req, returnSz - sizeof(*req));
-        free(req);
-        if (ret != 0) 
-        {
-          eof = true;
-          std::cout << "got close error" << std::endl;
-          break;
-        }
-        break;
-      }
-
-      default:
-      {
-        std::cout << " UKNOWN error" << std::endl;
-        eof = true;
       }
     }
+
+    if (!found) {
+      std::cout << " UNKNOWN opcode=" << op << std::endl;
+      eof = true;
+    }
   }
+
   std::cout << "tid=" << gettid() << " stopped work on socket=" << sockfd << std::endl;
 }
 
