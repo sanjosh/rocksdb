@@ -51,6 +51,10 @@ static ssize_t readWrap(int fd, char* buf, size_t count)
     if (currentReadSz < 0) {
       partialReadSz = currentReadSz;
       break;
+    } else if (currentReadSz == 0) { 
+      // return value 0 means other side closed the socket
+      partialReadSz = -1;
+      break;
     }
 
     partialReadSz += currentReadSz;
@@ -278,6 +282,10 @@ int ReplSocket::readSocket(ReplResponseOp& op, void** returnedData, ssize_t &ret
 
   } while (0);
 
+  if (err < 0) {
+    this->close();
+  }
+
   return err;
 }
 
@@ -288,9 +296,12 @@ bool ReplSocket::IsOpen() const
 
 int ReplSocket::close()
 {
-  int err = ::close(sock_fd);
-  if (err == 0) {
-    sock_fd = -1;
+  int err = 0;
+  if (sock_fd != -1) {
+    err = ::close(sock_fd);
+    if (err == 0) {
+      sock_fd = -1;
+    }
   }
   return err;
 }
