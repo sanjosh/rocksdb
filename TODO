@@ -1,29 +1,53 @@
 
 Iterator
-* fetch multiple from remote iterator
-* How to test for correctness of merge
 
-* put tombstones for delete in repl_server
+DONE
+* fetch multiple from remote iterator 
+* put tombstones for delete in repl_server 
+
+TODO
+* How to test for correctness of merge ??
+
 * use min(memtable->earliest_seqno, snapshot_seqnum) 
   on remote as upper bound for scan
   
-  memtable->earliest_seqno -- current seqnum
+  assuming memtable->earliest_seqno < current seqnum
+
+============================
+
+TODO
+replication should be per-CF not per-DB
 
 ============================
 
 SST Files
-* verify changes which disable SST write
-  during recovery and normal ops
+
+TODO
+* Check memtable not deleted before 
+    remote seq > memtable.greatest_seqnum
+
+DONE
+* disable SST write during recovery and normal ops
+  while still ensuring that Memtables get deleted
+
+  made conditional invocations to 
+  a) WriteLevel0Table
+  b) WriteLevel0TableForRecovery
 
 ============================
 
 Schema 
+
+TODO
 * create CF & delete CF need sequence number
+
 ============================
 
 WAL update
-* have one repl thread for all dbs 
-* long-term goal
+* wait for ack in client-side rocksdb in flushReplLog
+* have background thread which reads sockets & awakens
+  waiting threads via callback/future
+
 ============================
 
 RPC
