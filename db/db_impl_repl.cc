@@ -107,7 +107,7 @@ int BufferIter::writeNext(const char* inbuf, size_t insz)
   assert(offset + insz <= buffer.size());
   memcpy(buffer.data() + offset, inbuf, insz);
   offset += insz;
-  assert(offset < buffer.size());
+  assert(offset <= buffer.size());
   return 0;
 }
 
@@ -344,7 +344,7 @@ int ReplThreadInfo::initialize(const std::string& guid,
 
     // DO INITIALIZATION HANDSHAKE
     ssize_t totalSz = sizeof(ReplDBReq) + guid.size();
-    std::unique_ptr<ReplDBReq> initReq ((ReplDBReq*)malloc (totalSz));
+    std::unique_ptr<ReplDBReq, free_delete> initReq ((ReplDBReq*)malloc (totalSz));
     initReq->seq = lastSequence;
     initReq->identitySize = guid.size();
     memcpy(initReq->identity, guid.data(), guid.size());
@@ -429,7 +429,7 @@ void ReplThreadInfo::walUpdater()
       {
         ssize_t totalSz = sizeof(ReplWALUpdate) + batch.size();
   
-        std::unique_ptr<ReplWALUpdate> sw ((ReplWALUpdate*)malloc (totalSz));
+        std::unique_ptr<ReplWALUpdate, free_delete> sw ((ReplWALUpdate*)malloc (totalSz));
         memcpy(sw->buf, batch.data(), batch.size());
         sw->seq = res.sequence;
 
@@ -483,7 +483,7 @@ Status ReplThreadInfo::FlushReplLog()
     ssize_t totalSz = sizeof(ReplWALUpdate) + batch.GetDataSize();
 
     // TODO : combine into an operator new + ctor
-    std::unique_ptr<ReplWALUpdate> sw ((ReplWALUpdate*)malloc (totalSz));
+    std::unique_ptr<ReplWALUpdate, free_delete> sw ((ReplWALUpdate*)malloc (totalSz));
     memcpy(sw->buf, slice.data(), slice.size());
     sw->seq = seq;
 
@@ -531,7 +531,7 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
   do {
 
     const ssize_t totalSz = sizeof(ReplLookupReq) + key.size();
-    std::unique_ptr<ReplLookupReq> lreq ((ReplLookupReq*)malloc (totalSz));
+    std::unique_ptr<ReplLookupReq, free_delete> lreq ((ReplLookupReq*)malloc (totalSz));
     lreq->cfid = column_family->GetID();
     memcpy(lreq->key, key.data(), key.size());
     lreq->seq = seq;
@@ -706,7 +706,7 @@ public:
       return SeekToFirst();
     }
 
-    std::unique_ptr<ReplCursorOpenReq> oc ((ReplCursorOpenReq*)malloc (sizeof(ReplCursorOpenReq) + k.size()));
+    std::unique_ptr<ReplCursorOpenReq, free_delete> oc ((ReplCursorOpenReq*)malloc (sizeof(ReplCursorOpenReq) + k.size()));
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = false;

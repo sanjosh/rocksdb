@@ -30,6 +30,8 @@
 using rocksdb::WriteBatch;
 using rocksdb::ReplSocket;
 
+using rocksdb::free_delete;
+
 using rocksdb::ReplWALUpdate;
 using rocksdb::ReplRequestHeader;
 using rocksdb::ReplResponseHeader;
@@ -349,7 +351,7 @@ int processCursorOpen(ReplSocket& sock, void* void_req, size_t totalReadSz)
   auto local_cursor_id = ++ db.nextCursorId_;
   db.openCursors_.insert(std::make_pair(local_cursor_id, iter));
 
-  ReplCursorOpenResp* resp = nullptr;
+  std::unique_ptr<ReplCursorOpenResp, free_delete> resp;
   size_t totalSz = sizeof(*resp);
   std::string memKey;
   std::string value;
@@ -375,7 +377,7 @@ int processCursorOpen(ReplSocket& sock, void* void_req, size_t totalReadSz)
     totalSz += iter->key().size() + iter->value().size();
   } 
 
-  resp = (ReplCursorOpenResp*)malloc(totalSz);
+  resp.reset((ReplCursorOpenResp*)malloc(totalSz));
   resp->cursor_id = local_cursor_id;
   resp->status = Status::Code::kOk;
 
@@ -398,9 +400,7 @@ int processCursorOpen(ReplSocket& sock, void* void_req, size_t totalReadSz)
       << " eof=" << resp->is_eof << std::endl;
   }
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, resp, totalSz, db.lastAppliedSeq_);
-
-  free(resp);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_OPEN, (void*)resp.get(), totalSz, db.lastAppliedSeq_);
 
   return err;
 }
@@ -444,10 +444,10 @@ int processCursorMultiNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
     } 
   }
   
-  rocksdb::ReplCursorMultiNextResp* resp = nullptr;
+  std::unique_ptr<rocksdb::ReplCursorMultiNextResp, free_delete> resp;
 
   size_t totalSz = sizeof(*resp);
-  resp = (rocksdb::ReplCursorMultiNextResp*)malloc(totalSz);
+  resp.reset((rocksdb::ReplCursorMultiNextResp*)malloc(totalSz));
   resp->cursor_id = req->cursor_id;
   resp->num_sent = 0;
   resp->keySz = resp->valueSz = 0;
@@ -464,12 +464,17 @@ int processCursorMultiNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
     resp->num_sent = keyArray.size();
     resp->is_eof = !iter->Valid();
 
+    assert(valueArray.size() == keyArray.size());
+
     resp->keySz = bufIter.writeVector(keyArray);
     resp->valueSz = bufIter.writeVector(valueArray);
 
     assert(resp->keySz + resp->valueSz == bufIter.size());
     totalSz += bufIter.size();
-    resp = (rocksdb::ReplCursorMultiNextResp*)realloc(resp, totalSz);
+    // using unique_ptr.reset with realloc causes double free
+    auto ptr = (rocksdb::ReplCursorMultiNextResp*)realloc(resp.get(), totalSz);
+    resp.release();
+    resp.reset(ptr);
     memcpy(resp->buf, bufIter.data(), bufIter.size());
 
   } else {
@@ -484,11 +489,9 @@ int processCursorMultiNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
     //<< std::endl;
 
   int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_MULTI_NEXT, 
-    resp, 
+    (void*)resp.get(), 
     totalSz, 
     db.lastAppliedSeq_);
-
-  free(resp);
 
   return err;
 }
@@ -497,7 +500,7 @@ int processCursorNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
   rocksdb::ReplCursorNextReq* req = (rocksdb::ReplCursorNextReq*)void_req;
   size_t extraSz = totalReadSz - sizeof(*req);
-  rocksdb::ReplCursorNextResp* resp = nullptr;
+  std::unique_ptr<rocksdb::ReplCursorNextResp, free_delete> resp;
   size_t totalSz = sizeof(*resp);
   std::string memkey;
   std::string value;
@@ -527,7 +530,7 @@ int processCursorNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
     } 
   }
   
-  resp = (rocksdb::ReplCursorNextResp*)malloc(totalSz);
+  resp.reset((rocksdb::ReplCursorNextResp*)malloc(totalSz));
   resp->cursor_id = req->cursor_id;
   if (!iter) {
     resp->is_eof = true;
@@ -553,9 +556,7 @@ int processCursorNext(ReplSocket& sock, void* void_req, size_t totalReadSz)
     << std::endl;
     */
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, resp, totalSz, db.lastAppliedSeq_);
-
-  free(resp);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_NEXT, (void*)resp.get(), totalSz, db.lastAppliedSeq_);
 
   return err;
 }
@@ -564,9 +565,9 @@ int processCursorClose(ReplSocket& sock, void* void_req, size_t totalReadSz)
 {
   rocksdb::ReplCursorCloseReq* req = (rocksdb::ReplCursorCloseReq*)void_req;
   size_t extraSz = totalReadSz - sizeof(*req);
-  rocksdb::ReplCursorCloseResp* resp = nullptr;
+  std::unique_ptr<rocksdb::ReplCursorCloseResp, free_delete> resp;
   size_t totalSz = sizeof(*resp);
-  resp = (rocksdb::ReplCursorCloseResp*)malloc(totalSz);
+  resp.reset((rocksdb::ReplCursorCloseResp*)malloc(totalSz));
 
   auto mapIter = db.openCursors_.find(req->cursor_id);
   if (mapIter != db.openCursors_.end()) {
@@ -580,9 +581,7 @@ int processCursorClose(ReplSocket& sock, void* void_req, size_t totalReadSz)
 
   std::cout << "CLOSECURSOR id=" << resp->cursor_id << std::endl;
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, resp, totalSz, db.lastAppliedSeq_);
-
-  free(resp);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_CURSOR_CLOSE, (void*)resp.get(), totalSz, db.lastAppliedSeq_);
 
   return err;
 }
@@ -604,7 +603,7 @@ int processLookup(ReplSocket& sock, void* void_req, size_t totalReadSz)
     << std::endl;
     */
 
-  ReplLookupResp* resp = nullptr;
+  std::unique_ptr<ReplLookupResp, free_delete> resp;
   size_t totalSz = sizeof(*resp);
 
   while (db.lastAppliedSeq_ < req->seq) {
@@ -641,7 +640,7 @@ int processLookup(ReplSocket& sock, void* void_req, size_t totalReadSz)
         //<< std::endl;
 
       totalSz += value.size();
-      resp = (ReplLookupResp*)malloc(totalSz);
+      resp.reset((ReplLookupResp*)malloc(totalSz));
       resp->found = true;
       memcpy(resp->value, value.data(), value.size());
       resp->status = Status::Code::kOk;
@@ -649,7 +648,7 @@ int processLookup(ReplSocket& sock, void* void_req, size_t totalReadSz)
     else 
     {
       // key not found
-      resp = (ReplLookupResp*)malloc(totalSz);
+      resp.reset((ReplLookupResp*)malloc(totalSz));
       resp->found = false;
       resp->status = Status::Code::kOk;
       //std::cout << "GET cf=" << cfid 
@@ -659,14 +658,12 @@ int processLookup(ReplSocket& sock, void* void_req, size_t totalReadSz)
   } 
   else 
   {
-    resp = (ReplLookupResp*)malloc(totalSz);
+    resp.reset((ReplLookupResp*)malloc(totalSz));
     resp->status = Status::Code::kInvalidArgument;
     //std::cout << "GET FATAL not found cf=" << cfid << std::endl;
   }
 
-  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, resp, totalSz, db.lastAppliedSeq_);
-
-  free(resp);
+  int err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_LOOKUP, (void*)resp.get(), totalSz, db.lastAppliedSeq_);
 
   return err;
 }
@@ -809,16 +806,14 @@ int processInit(ReplSocket& sock, void* void_req, size_t totalReadSz)
     << ":case=" << caseString
     << std::endl;
 
-  ReplDBResp* resp = nullptr;
+  std::unique_ptr<ReplDBResp, free_delete> resp;
   size_t totalSz = sizeof(*resp) + responseIdentity.size();
-  resp = (ReplDBResp*)malloc(totalSz);
+  resp.reset((ReplDBResp*)malloc(totalSz));
   resp->identitySize = responseIdentity.size();
   resp->seq = responseSeq;
   memcpy(resp->identity, responseIdentity.data(), responseIdentity.size());
 
-  err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, resp, totalSz, db.lastAppliedSeq_);
-
-  free(resp);
+  err = sock.writeSocket(rocksdb::ReplResponseOp::RESP_INIT1, (void*)resp.get(), totalSz, db.lastAppliedSeq_);
 
   return err;
 }

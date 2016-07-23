@@ -21,6 +21,10 @@ class ReadOptions;
 class ColumnFamilyHandle;
 class Slice;
 
+struct free_delete
+{
+  void operator()(void* x) { std::free(x); }
+};
 
 #define RESP_BEGIN 1000
 // communication format between rocksdb and Offloader
