@@ -344,17 +344,15 @@ int ReplThreadInfo::initialize(const std::string& guid,
 
     // DO INITIALIZATION HANDSHAKE
     ssize_t totalSz = sizeof(ReplDBReq) + guid.size();
-    ReplDBReq* initReq = (ReplDBReq*)malloc(totalSz);
+    std::unique_ptr<ReplDBReq> initReq ((ReplDBReq*)malloc (totalSz));
     initReq->seq = lastSequence;
     initReq->identitySize = guid.size();
     memcpy(initReq->identity, guid.data(), guid.size());
 
-    err = writeSock.writeSocket(OP_INIT1, initReq, totalSz, 0);
+    err = writeSock.writeSocket(OP_INIT1, (void*)initReq.get(), totalSz, 0);
     if (err < 0) {
       break;
     }
-
-    free(initReq);
 
     ReplDBResp* lresp;
     ssize_t readSz = 0;
@@ -431,15 +429,12 @@ void ReplThreadInfo::walUpdater()
       {
         ssize_t totalSz = sizeof(ReplWALUpdate) + batch.size();
   
-        // TODO : combine into an operator new + ctor
-        ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
+        std::unique_ptr<ReplWALUpdate> sw ((ReplWALUpdate*)malloc (totalSz));
         memcpy(sw->buf, batch.data(), batch.size());
         sw->seq = res.sequence;
 
-        int err = writeSock.writeSocket(OP_WAL, sw, totalSz, 0);
+        int err = writeSock.writeSocket(OP_WAL, (void*)sw.get(), totalSz, 0);
         (void)err;
-
-        free(sw);
       }
 
       lastReplSequence = res.sequence + res.writeBatchPtr->Count() - 1;
@@ -488,13 +483,11 @@ Status ReplThreadInfo::FlushReplLog()
     ssize_t totalSz = sizeof(ReplWALUpdate) + batch.GetDataSize();
 
     // TODO : combine into an operator new + ctor
-    ReplWALUpdate* sw = (ReplWALUpdate*) malloc(totalSz);
+    std::unique_ptr<ReplWALUpdate> sw ((ReplWALUpdate*)malloc (totalSz));
     memcpy(sw->buf, slice.data(), slice.size());
     sw->seq = seq;
 
-    int err = writeSock.writeSocket(OP_WAL, sw, totalSz, 0);
-
-    free(sw);
+    int err = writeSock.writeSocket(OP_WAL, (void*)sw.get(), totalSz, 0);
 
     if (err < 0) {
       status = Status::IOError("connxn broken");
@@ -538,15 +531,13 @@ Status ReplThreadInfo::Get(const ReadOptions& options,
   do {
 
     const ssize_t totalSz = sizeof(ReplLookupReq) + key.size();
-    ReplLookupReq* lreq = (ReplLookupReq*) malloc(totalSz);
+    std::unique_ptr<ReplLookupReq> lreq ((ReplLookupReq*)malloc (totalSz));
     lreq->cfid = column_family->GetID();
     memcpy(lreq->key, key.data(), key.size());
     lreq->seq = seq;
 
-    int err = readSock.writeSocket(OP_LOOKUP, lreq, totalSz, 0);
+    int err = readSock.writeSocket(OP_LOOKUP, (void*)lreq.get(), totalSz, 0);
     (void)err;
-
-    free((void*)lreq);
 
     ReplLookupResp* lresp;
     ssize_t readSz;
@@ -602,7 +593,7 @@ public:
     ReplThreadInfo* t = &repl_thread_info_;
 
     int err = 0;
-    ReplCursorCloseReq* oc = (ReplCursorCloseReq*)malloc(sizeof(ReplCursorCloseReq));
+    std::unique_ptr<ReplCursorCloseReq> oc (new ReplCursorCloseReq);
     const ssize_t totalSz = sizeof(ReplCursorCloseReq);
     oc->cursor_id = remote_cursor_id_;
 
@@ -610,7 +601,7 @@ public:
 
     do {
 
-      err = t->readSock.writeSocket(OP_CURSOR_CLOSE, oc, totalSz, 0);
+      err = t->readSock.writeSocket(OP_CURSOR_CLOSE, (void*)oc.get(), totalSz, 0);
       if (err < 0) {
         break;
       }
@@ -627,7 +618,6 @@ public:
     } while (0);
     
     free(resp);
-    free(oc);
 
     remote_cursor_id_ = -1;
     valid_ = false;
@@ -716,7 +706,7 @@ public:
       return SeekToFirst();
     }
 
-    ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq) + k.size());
+    std::unique_ptr<ReplCursorOpenReq> oc ((ReplCursorOpenReq*)malloc (sizeof(ReplCursorOpenReq) + k.size()));
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = false;
@@ -730,35 +720,30 @@ public:
 
     memcpy(oc->buf, newSlice.data(), newSlice.size());
 
-    SeekInternal(oc, newSlice.size());
-
-    free(oc);
+    SeekInternal(oc.get(), newSlice.size());
   }
   virtual void SeekToFirst() override 
   {
-    ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq));
+    std::unique_ptr<ReplCursorOpenReq> oc (new ReplCursorOpenReq);
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = true;
     oc->seekLast = false;
     oc->numKeysPerNext = 1;
 
-    SeekInternal(oc, 0);
-
-    free(oc);
+    SeekInternal(oc.get(), 0);
   }
   virtual void SeekToLast() override 
   {
-    ReplCursorOpenReq* oc = (ReplCursorOpenReq*)malloc(sizeof(ReplCursorOpenReq));
+    std::unique_ptr<ReplCursorOpenReq> oc (new ReplCursorOpenReq);
     oc->cfid = cfid_;
     oc->seq = seqnum_;
     oc->seekFirst = false;
     oc->seekLast = true;
     oc->numKeysPerNext = 1;
 
-    SeekInternal(oc, 0);
+    SeekInternal(oc.get(), 0);
 
-    free(oc);
   }
 
   void MultiNextInternal(int direction) 
@@ -766,7 +751,7 @@ public:
     ReplThreadInfo* t = &repl_thread_info_;
 
     int err = 0;
-    ReplCursorMultiNextReq* oc = (ReplCursorMultiNextReq*)malloc(sizeof(ReplCursorMultiNextReq));
+    std::unique_ptr<ReplCursorMultiNextReq> oc (new ReplCursorMultiNextReq);
     const ssize_t totalSz = sizeof(ReplCursorMultiNextReq);
     oc->cursor_id = remote_cursor_id_;
     oc->direction = direction;
@@ -778,7 +763,7 @@ public:
 
     do {
 
-      err = t->readSock.writeSocket(OP_CURSOR_MULTI_NEXT, oc, totalSz, 0);
+      err = t->readSock.writeSocket(OP_CURSOR_MULTI_NEXT, (void*)oc.get(), totalSz, 0);
       if (err < 0) {
         break;
       }
@@ -830,7 +815,6 @@ public:
     } while (0);
     
     free(resp);
-    free(oc);
   }
 
   void NextInternal(int direction) 
@@ -838,7 +822,7 @@ public:
     ReplThreadInfo* t = &repl_thread_info_;
 
     int err = 0;
-    ReplCursorNextReq* oc = (ReplCursorNextReq*)malloc(sizeof(ReplCursorNextReq));
+    std::unique_ptr<ReplCursorNextReq> oc (new ReplCursorNextReq);
     const ssize_t totalSz = sizeof(ReplCursorNextReq);
     oc->cursor_id = remote_cursor_id_;
     oc->direction = direction;
@@ -847,7 +831,7 @@ public:
 
     do {
 
-      err = t->readSock.writeSocket(OP_CURSOR_NEXT, oc, totalSz, 0);
+      err = t->readSock.writeSocket(OP_CURSOR_NEXT, (void*)oc.get(), totalSz, 0);
       if (err < 0) {
         break;
       }
@@ -888,7 +872,6 @@ public:
     } while (0);
     
     free(resp);
-    free(oc);
   }
 
   // if internal key cache empty
