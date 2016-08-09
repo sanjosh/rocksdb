@@ -610,9 +610,9 @@ whitebox_crash_test: db_stress
 	python -u tools/db_crashtest.py whitebox
 
 asan_check:
-	$(MAKE) clean
-	COMPILE_WITH_ASAN=1 $(MAKE) check -j32
-	$(MAKE) clean
+	#$(MAKE) clean
+	COMPILE_WITH_ASAN=1 $(MAKE) check -j4
+	#$(MAKE) clean
 
 asan_crash_test:
 	$(MAKE) clean
@@ -1063,8 +1063,11 @@ iostats_context_test: util/iostats_context_test.o $(LIBOBJECTS) $(TESTHARNESS)
 
 #-------------------------------------------------
 # make install related stuff
-#INSTALL_PATH ?= /home/dce/sandeep
-INSTALL_PATH ?= /usr/local
+#INSTALL_PATH ?= /usr/local
+# this is necessary for mooshakdb
+# if you build independent rocksdb, change it
+INSTALL_PATH ?= $(CURDIR)/../../install/
+
 
 uninstall:
 	rm -rf $(INSTALL_PATH)/include/rocksdb \
