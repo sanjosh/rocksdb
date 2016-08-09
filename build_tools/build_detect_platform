@@ -206,8 +206,9 @@ EOF
 
     # Test whether Snappy library is installed
     # http://code.google.com/p/snappy/
+    # Disabled this for mooshakdb
     $CXX $CFLAGS -x c++ - -o /dev/null 2>/dev/null  <<EOF
-      #include <snappy.h>
+      #include <snappy-fake.h->
       int main() {}
 EOF
     if [ "$?" = 0 ]; then
