@@ -298,6 +298,7 @@ Status WriteBatch::Iterate(Handler* handler) const {
         break;
       case kTypeLogData:
         handler->LogData(blob);
+        found++;
         break;
       default:
         return Status::Corruption("unknown WriteBatch tag");
@@ -498,6 +499,9 @@ void WriteBatch::Merge(ColumnFamilyHandle* column_family,
 }
 
 void WriteBatch::PutLogData(const Slice& blob) {
+  // increment the count in the batch, otherwise the blob
+  // is not visible inside the batch
+  WriteBatchInternal::SetCount(this, WriteBatchInternal::Count(this) + 1);
   rep_.push_back(static_cast<char>(kTypeLogData));
   PutLengthPrefixedSlice(&rep_, blob);
 }

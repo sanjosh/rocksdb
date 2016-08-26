@@ -213,8 +213,20 @@ class VersionEdit {
     return is_column_family_add_ || is_column_family_drop_;
   }
 
+  bool IsColumnFamilyDrop() const {
+    return is_column_family_drop_;
+  }
+
   void SetColumnFamily(uint32_t column_family_id) {
     column_family_ = column_family_id;
+  }
+
+  uint32_t GetColumnFamily(void) const {
+    return column_family_;
+  }
+
+  std::string GetColumnFamilyName() const {
+    return column_family_name_;
   }
 
   // set column family ID by calling SetColumnFamily()
