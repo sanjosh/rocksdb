@@ -9,6 +9,7 @@
 #include <vector>
 #include <queue>
 #include <cassert>
+#include <arpa/inet.h> // htonll
 #include <string.h>
 
 namespace rocksdb {
@@ -81,6 +82,27 @@ struct ReplSocket
   ~ReplSocket();
 };
 
+namespace {
+// mongo encodes RecordID using native arch (little endian)
+int64_t htonll(int64_t value)
+{
+    // The answer is 42
+    static const int num = 42;
+
+    // Check the endianness
+    if (*reinterpret_cast<const char*>(&num) == num)
+    {
+        const uint32_t high_part = htonl(static_cast<uint32_t>(value >> 32));
+        const uint32_t low_part = htonl(static_cast<uint32_t>(value & 0xFFFFFFFFLL));
+
+        return (static_cast<int64_t>(low_part) << 32) | high_part;
+    } else
+    {
+        return value;
+    }
+}
+}
+
 /**
  * This is the key format as stored on the offloader
  * Either in the key or value, we must retain the
@@ -132,6 +154,18 @@ struct ReplKey
     SequenceNumber ret;
     GetFixed64(&s, &ret);
     return ret;
+  }
+
+  // extract recordId from key
+  int64_t userKeyAsInt() const
+  {
+    // this mirrors the logic in mongo-rocks
+    // RocksRecordStore::_makeRecordId
+    auto stringKey = userKey();
+    Slice recordIdSlice(stringKey.c_str() + sizeof(uint32_t), sizeof(int64_t));
+    int64_t recordId = *(int64_t*)recordIdSlice.data();
+    recordId = htonll(recordId);
+    return recordId;
   }
 
   std::string userKey() const
